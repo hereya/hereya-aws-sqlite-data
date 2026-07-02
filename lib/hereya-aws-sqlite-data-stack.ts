@@ -1,10 +1,14 @@
 import * as cdk from "aws-cdk-lib";
+import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
+import { HttpIamAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import { HttpServiceDiscoveryIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as autoscaling from "aws-cdk-lib/aws-autoscaling";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
+import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { execSync } from "node:child_process";
@@ -69,6 +73,51 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
       description: "Dilaya SQLite Data API instance — no public ingress; API GW VPC Link only",
       allowAllOutbound: true,
     });
+
+    // --- Discovery + API Gateway (IAM/SigV4) ---------------------------------
+    // Cloud Map + VPC Link v2 is the no-load-balancer private integration:
+    // the singleton registers its own IP; API GW discovers it. The instance SG
+    // only ever admits the VPC Link's SG on the service port.
+    const vpcLinkSg = new ec2.SecurityGroup(this, "VpcLinkSg", {
+      vpc,
+      description: "API Gateway VPC Link → Data API instance",
+      allowAllOutbound: true,
+    });
+    instanceSg.addIngressRule(vpcLinkSg, ec2.Port.tcp(servicePort), "API GW VPC Link only");
+
+    const namespace = new servicediscovery.PrivateDnsNamespace(this, "Namespace", {
+      name: `${this.stackName}.dilaya.internal`.toLowerCase(),
+      vpc,
+    });
+    // No Cloud Map health check: the deregister-all-then-register-self protocol
+    // plus the ASG singleton guarantee at most one (live) registration.
+    const discoveryService = namespace.createService("DataApiService", {
+      dnsRecordType: servicediscovery.DnsRecordType.SRV,
+      dnsTtl: cdk.Duration.seconds(10),
+    });
+
+    const vpcLink = new apigwv2.VpcLink(this, "VpcLink", {
+      vpc,
+      subnets: { subnetType: ec2.SubnetType.PUBLIC },
+      securityGroups: [vpcLinkSg],
+    });
+
+    const httpApi = new apigwv2.HttpApi(this, "HttpApi", {
+      apiName: `${this.stackName}-sqlite-data`,
+      defaultAuthorizer: new HttpIamAuthorizer(),
+    });
+    const integration = new HttpServiceDiscoveryIntegration("DataApi", discoveryService, { vpcLink });
+    for (const [method, path] of [
+      [apigwv2.HttpMethod.POST, "/query"],
+      [apigwv2.HttpMethod.POST, "/batch-execute"],
+      [apigwv2.HttpMethod.POST, "/tx/begin"],
+      [apigwv2.HttpMethod.POST, "/tx/commit"],
+      [apigwv2.HttpMethod.POST, "/tx/rollback"],
+      [apigwv2.HttpMethod.POST, "/admin/sync"],
+      [apigwv2.HttpMethod.GET, "/health"],
+    ] as const) {
+      httpApi.addRoutes({ path, methods: [method], integration });
+    }
 
     // --- Service artifact ----------------------------------------------------
     const artifact = new s3assets.Asset(this, "ServiceArtifact", {
@@ -136,6 +185,33 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
         resources: [artifactParam.parameterArn],
       }),
     );
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "CloudMapSelfRegistration",
+        actions: [
+          "servicediscovery:RegisterInstance",
+          "servicediscovery:DeregisterInstance",
+          "servicediscovery:ListInstances",
+        ],
+        resources: [discoveryService.serviceArn],
+      }),
+    );
+    // Cloud Map manages the Route53 records of the private DNS namespace on the
+    // caller's behalf during (de)registration (cf. AWSCloudMapRegisterInstanceAccess).
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "CloudMapRoute53",
+        actions: ["route53:ChangeResourceRecordSets", "route53:GetHostedZone"],
+        resources: ["arn:aws:route53:::hostedzone/*"],
+      }),
+    );
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "CloudMapRoute53List",
+        actions: ["route53:ListHostedZonesByName"],
+        resources: ["*"],
+      }),
+    );
     artifact.grantRead(role);
 
     // --- Launch template + self-healing Spot singleton ----------------------
@@ -162,6 +238,7 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
           HEARTBEAT_ENABLED: "1",
           HEARTBEAT_DIMENSION: this.stackName,
           IMDS_ENABLED: "1",
+          CLOUDMAP_SERVICE_ID: discoveryService.serviceId,
         },
       }),
     );
@@ -216,6 +293,20 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
         ],
       }),
     });
-    // dataApiUrl + iamPolicySqliteDataApi land with the API Gateway (next step).
+    new cdk.CfnOutput(this, "dataApiUrl", { value: httpApi.apiEndpoint });
+    new cdk.CfnOutput(this, "iamPolicySqliteDataApi", {
+      value: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["execute-api:Invoke"],
+            Resource: [
+              `arn:aws:execute-api:${this.region}:${this.account}:${httpApi.apiId}/*/*/*`,
+            ],
+          },
+        ],
+      }),
+    });
   }
 }

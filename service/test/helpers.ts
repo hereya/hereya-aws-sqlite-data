@@ -60,6 +60,7 @@ export async function startTestService(overrides: Partial<Config> = {}): Promise
     heartbeatDimension: "test",
     imdsEnabled: false,
     drainMs: 100,
+    cloudMapServiceId: "",
     ...overrides,
   };
 

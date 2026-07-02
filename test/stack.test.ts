@@ -82,6 +82,25 @@ test("instance role never gets s3:* and scopes S3 to the bucket", () => {
   }
 });
 
+test("every API route requires IAM (SigV4) authorization", () => {
+  const routes = template.findResources("AWS::ApiGatewayV2::Route");
+  const keys = Object.values(routes).map((r) => r.Properties.RouteKey as string);
+  assert.ok(keys.length >= 7, `expected >=7 routes, got ${keys.join(", ")}`);
+  for (const route of Object.values(routes)) {
+    assert.equal(route.Properties.AuthorizationType, "AWS_IAM", `route ${route.Properties.RouteKey} must be IAM-authorized`);
+  }
+});
+
+test("VPC Link + Cloud Map service exist; instance admits only the VPC Link SG", () => {
+  template.resourceCountIs("AWS::ApiGatewayV2::VpcLink", 1);
+  template.resourceCountIs("AWS::ServiceDiscovery::Service", 1);
+  const ingresses = template.findResources("AWS::EC2::SecurityGroupIngress");
+  const toInstance = Object.values(ingresses);
+  assert.equal(toInstance.length, 1, "exactly one ingress rule in the whole stack");
+  assert.equal(toInstance[0]!.Properties.FromPort, 8080);
+  assert.ok(toInstance[0]!.Properties.SourceSecurityGroupId, "ingress must be SG-scoped, not CIDR");
+});
+
 test("artifact pointer parameter exists (service-only update path)", () => {
   template.hasResourceProperties("AWS::SSM::Parameter", {
     Name: Match.stringLikeRegexp("/TestStack/service-artifact"),
@@ -90,7 +109,14 @@ test("artifact pointer parameter exists (service-only update path)", () => {
 
 test("exports the consumer env contract", () => {
   const outputs = template.findOutputs("*");
-  for (const key of ["awsRegion", "sqliteReplicaBucketName", "registryTableName", "iamPolicySqliteRegistry"]) {
+  for (const key of [
+    "awsRegion",
+    "sqliteReplicaBucketName",
+    "registryTableName",
+    "iamPolicySqliteRegistry",
+    "dataApiUrl",
+    "iamPolicySqliteDataApi",
+  ]) {
     assert.ok(outputs[key], `missing output ${key}`);
   }
   // the policy value embeds the table ARN token, so at template level it is an

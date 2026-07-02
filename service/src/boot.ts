@@ -4,6 +4,7 @@
 import type { Server } from "node:http";
 import type { Config } from "./config.ts";
 import { AppManager } from "./apps.ts";
+import { CloudMapRegistration } from "./cloudmap.ts";
 import { Heartbeat } from "./heartbeat.ts";
 import { Limiter } from "./limits.ts";
 import { Litestream } from "./litestream.ts";
@@ -64,6 +65,18 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   // 5. continuous replication
   litestream.start(servedAtBoot);
 
+  // 6. announce ourselves to the API Gateway path (Cloud Map), only once the
+  // API is actually able to answer
+  let cloudMap: CloudMapRegistration | null = null;
+  if (cfg.cloudMapServiceId) {
+    cloudMap = new CloudMapRegistration({
+      serviceId: cfg.cloudMapServiceId,
+      region: cfg.awsRegion,
+      port,
+    });
+    await cloudMap.register();
+  }
+
   // background loops
   const sweeper = setInterval(() => {
     for (const expired of txRegistry.sweep()) {
@@ -84,7 +97,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   const heartbeat = new Heartbeat(cfg, () => litestream.healthy);
   heartbeat.start();
 
-  const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry });
+  const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry, cloudMap });
   shutdownRef = shutdown;
   if (opts.installSignalHandlers !== false) shutdown.install();
 

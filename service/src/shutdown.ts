@@ -6,6 +6,7 @@ import type { Server } from "node:http";
 import type { Config } from "./config.ts";
 import type { AppManager } from "./apps.ts";
 import type { AppSync } from "./sync.ts";
+import type { CloudMapRegistration } from "./cloudmap.ts";
 import type { Litestream } from "./litestream.ts";
 import type { TxRegistry } from "./tx.ts";
 
@@ -22,6 +23,7 @@ export class Shutdown {
   private readonly sync: AppSync;
   private readonly litestream: Litestream;
   private readonly txRegistry: TxRegistry;
+  private readonly cloudMap: CloudMapRegistration | null;
   private draining = false;
   private spotTimer: NodeJS.Timeout | null = null;
 
@@ -32,6 +34,7 @@ export class Shutdown {
     sync: AppSync;
     litestream: Litestream;
     txRegistry: TxRegistry;
+    cloudMap?: CloudMapRegistration | null;
   }) {
     this.cfg = opts.cfg;
     this.server = opts.server;
@@ -39,6 +42,7 @@ export class Shutdown {
     this.sync = opts.sync;
     this.litestream = opts.litestream;
     this.txRegistry = opts.txRegistry;
+    this.cloudMap = opts.cloudMap ?? null;
   }
 
   get isDraining(): boolean {
@@ -83,6 +87,9 @@ export class Shutdown {
     this.draining = true;
     log({ event: "drain-start", reason });
     if (this.spotTimer) clearInterval(this.spotTimer);
+
+    // 0. Leave service discovery first so API Gateway stops routing to us.
+    if (this.cloudMap) await this.cloudMap.deregister();
 
     // 1. Roll back whatever transactions are open (their callers get TX_NOT_FOUND).
     for (const app of this.sync.servedApps) {

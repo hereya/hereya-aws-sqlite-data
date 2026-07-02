@@ -29,6 +29,7 @@ export interface Config {
   heartbeatDimension: string;
   imdsEnabled: boolean;
   drainMs: number;
+  cloudMapServiceId: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -78,5 +79,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",
     imdsEnabled: env.IMDS_ENABLED === "1" || env.IMDS_ENABLED === "true",
     drainMs: intEnv("DRAIN_MS", 5_000),
+    cloudMapServiceId: env.CLOUDMAP_SERVICE_ID ?? "",
   };
 }
