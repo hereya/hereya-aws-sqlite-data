@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { statSync } from "node:fs";
 import type { Config } from "./config.ts";
 import { ServiceError, toServiceError } from "./errors.ts";
 import { bindParams, type StatementResult } from "./marshalling.ts";
@@ -24,6 +25,8 @@ export interface ServerDeps {
   /** Restore-before-first-query hook (hot-add); absent in bare-core tests. */
   ensureServed?: (orgId: string, appId: string) => Promise<void>;
   onAdminSync?: () => Promise<{ added: number; removed: number }>;
+  /** Teardown hook for POST /admin/delete-app (connector drop-app flow). */
+  onDeleteApp?: (orgId: string, appId: string) => Promise<void>;
   health?: () => Record<string, unknown>;
   /** While draining (shutdown/spot notice), everything but /health gets 503. */
   isDraining?: () => boolean;
@@ -194,6 +197,25 @@ export function buildServer(deps: ServerDeps): Server {
     }
   }
 
+  /** Db + WAL file sizes for the usage tool. Requires an active pair. */
+  async function handleStats(url: URL): Promise<{ dbSizeBytes: number }> {
+    const q = validateTx(
+      { org_id: url.searchParams.get("org_id"), app_id: url.searchParams.get("app_id") },
+      false,
+    );
+    await authorize(q.orgId, q.appId);
+    const dbPath = manager.dbPath(q.orgId, q.appId);
+    let total = 0;
+    for (const suffix of ["", "-wal"]) {
+      try {
+        total += statSync(dbPath + suffix).size;
+      } catch {
+        // file absent (e.g. never written, or WAL folded) — counts as 0
+      }
+    }
+    return { dbSizeBytes: total };
+  }
+
   return createServer((req, res) => {
     void route(req, res);
   });
@@ -217,6 +239,14 @@ export function buildServer(deps: ServerDeps): Server {
       }
       if (deps.isDraining?.()) {
         throw new ServiceError("UNAVAILABLE", "instance is shutting down; retry shortly");
+      }
+      if (route === "GET /stats") {
+        orgId = url.searchParams.get("org_id") ?? undefined;
+        appId = url.searchParams.get("app_id") ?? undefined;
+        const stats = await handleStats(url);
+        audit({ ts: new Date().toISOString(), route, orgId, appId, allowed: true, ms: Date.now() - started });
+        send(res, 200, stats);
+        return;
       }
       if (req.method !== "POST") {
         throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
@@ -251,6 +281,18 @@ export function buildServer(deps: ServerDeps): Server {
             payload = { status: "reloaded" };
           }
           break;
+        case "/admin/delete-app": {
+          // Deliberately NO active-status check: the connector flips the
+          // registry row to 'deleting' BEFORE calling this. IAM already
+          // guarantees the caller is the legitimate connector.
+          const q = validateTx(body, false);
+          if (!deps.onDeleteApp) throw new ServiceError("BAD_REQUEST", "delete-app is not available");
+          await deps.onDeleteApp(q.orgId, q.appId);
+          orgId = q.orgId;
+          appId = q.appId;
+          payload = { status: "deleted", note: "local file removed; S3 replica retained" };
+          break;
+        }
         default:
           throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
       }

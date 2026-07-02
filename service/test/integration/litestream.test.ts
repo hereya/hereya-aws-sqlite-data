@@ -130,6 +130,41 @@ test("hot-add via /admin/sync and hot-remove", { skip: !haveLitestream }, async 
   }
 });
 
+test("stats and delete-app admin surface", { skip: !haveLitestream }, async () => {
+  const env = makeEnv();
+  const svc = await bootService(env.cfg, { installSignalHandlers: false });
+  const base = `http://127.0.0.1:${svc.port}`;
+  try {
+    await call(base, "/query", { ...A1, sql: "CREATE TABLE big (s TEXT)" });
+    await call(base, "/query", {
+      ...A1,
+      sql: "INSERT INTO big VALUES (:s)",
+      params: [{ name: "s", value: { stringValue: "x".repeat(10_000) } }],
+    });
+    const stats = await call(base, "/stats?org_id=org-a&app_id=app-1");
+    assert.equal(stats.status, 200, JSON.stringify(stats.body));
+    assert.ok(stats.body.dbSizeBytes > 10_000, `dbSizeBytes=${stats.body.dbSizeBytes}`);
+
+    // stats for an unknown pair is denied
+    const deniedStats = await call(base, "/stats?org_id=org-a&app_id=ghost");
+    assert.equal(deniedStats.status, 403);
+
+    // let litestream ship the first snapshot before tearing the app down
+    assert.ok(
+      await waitFor(() => existsSync(join(env.dir, "replicas", "org-a", "app-1"))),
+      "replica created before delete",
+    );
+
+    // delete-app: local file gone, replica retained, executor closed
+    const del = await call(base, "/admin/delete-app", A1);
+    assert.equal(del.status, 200, JSON.stringify(del.body));
+    assert.ok(!existsSync(join(env.dir, "dbs", "org-a", "app-1", "app.db")), "local db removed");
+    assert.ok(existsSync(join(env.dir, "replicas", "org-a", "app-1")), "replica retained");
+  } finally {
+    await svc.stop();
+  }
+});
+
 test("request-path hot-add restores from replica before first query", { skip: !haveLitestream }, async () => {
   const env = makeEnv();
 

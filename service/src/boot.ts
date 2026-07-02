@@ -55,6 +55,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     limiter,
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
     onAdminSync: () => sync.syncOnce(),
+    onDeleteApp: (orgId, appId) => sync.removeApp(orgId, appId),
     health: () => ({ litestream: litestream.healthy ? "up" : "down" }),
     isDraining: () => shutdownRef?.isDraining ?? false,
   });

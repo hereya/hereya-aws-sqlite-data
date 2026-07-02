@@ -84,6 +84,25 @@ export class AppSync {
     return task;
   }
 
+  /**
+   * Explicit teardown (connector drop-app flow): close the executor, drop the
+   * app from the litestream config, delete the LOCAL file. The S3 replica is
+   * retained as the durable archive. Idempotent; works whether or not the app
+   * is currently served (its registry row is typically already non-active).
+   */
+  async removeApp(orgId: string, appId: string): Promise<void> {
+    const key = appKeyOf(orgId, appId);
+    const wasServed = this.served.delete(key);
+    await this.manager.removeApp(orgId, appId);
+    try {
+      rmSync(dirname(this.manager.dbPath(orgId, appId)), { recursive: true, force: true });
+    } catch (err) {
+      log({ event: "remove-cleanup-failed", orgId, appId, message: (err as Error).message });
+    }
+    if (wasServed) await this.litestream.bounce(this.servedApps);
+    log({ event: "removed", orgId, appId, wasServed });
+  }
+
   /** Full reconcile: registry is the source of truth for adds AND removals. */
   async syncOnce(): Promise<{ added: number; removed: number }> {
     if (this.syncing) return this.syncing;

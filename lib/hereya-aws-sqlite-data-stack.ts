@@ -75,7 +75,7 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
 
     const instanceSg = new ec2.SecurityGroup(this, "InstanceSg", {
       vpc,
-      description: "Dilaya SQLite Data API instance — no public ingress; API GW VPC Link only",
+      description: "Dilaya SQLite Data API instance - no public ingress; API GW VPC Link only",
       allowAllOutbound: true,
     });
 
@@ -85,7 +85,7 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
     // only ever admits the VPC Link's SG on the service port.
     const vpcLinkSg = new ec2.SecurityGroup(this, "VpcLinkSg", {
       vpc,
-      description: "API Gateway VPC Link → Data API instance",
+      description: "API Gateway VPC Link to Data API instance",
       allowAllOutbound: true,
     });
     instanceSg.addIngressRule(vpcLinkSg, ec2.Port.tcp(servicePort), "API GW VPC Link only");
@@ -119,6 +119,8 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
       [apigwv2.HttpMethod.POST, "/tx/commit"],
       [apigwv2.HttpMethod.POST, "/tx/rollback"],
       [apigwv2.HttpMethod.POST, "/admin/sync"],
+      [apigwv2.HttpMethod.POST, "/admin/delete-app"],
+      [apigwv2.HttpMethod.GET, "/stats"],
       [apigwv2.HttpMethod.GET, "/health"],
     ] as const) {
       httpApi.addRoutes({ path, methods: [method], integration });
