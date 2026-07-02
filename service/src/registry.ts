@@ -1,4 +1,10 @@
 import { readFileSync, statSync } from "node:fs";
+import {
+  DynamoDBClient,
+  GetItemCommand,
+  ScanCommand,
+  type AttributeValue,
+} from "@aws-sdk/client-dynamodb";
 import { ServiceError } from "./errors.ts";
 
 export type RegistryStatus = "active" | "inactive" | "unknown";
@@ -23,6 +29,93 @@ interface FileEntry {
   org_id: string;
   app_id: string;
   status: string;
+}
+
+/**
+ * DynamoDB registry over the unified table (PK org_id, SK sk):
+ *   sk='org'          → org meta {status, displayName}
+ *   sk='app#<appId>'  → app row {status: active|archived|deleting, name, ...}
+ *   sk='name#<name>'  → name→appId alias (connector-side concern)
+ * The VM only reads app rows. Positive/negative lookups are cached briefly;
+ * backend errors are NEVER cached and always deny (fail-closed).
+ */
+export class DdbRegistry implements Registry {
+  private readonly client: DynamoDBClient;
+  private readonly tableName: string;
+  private readonly cacheMs: number;
+  private readonly now: () => number;
+  private readonly cache = new Map<string, { status: RegistryStatus; at: number }>();
+
+  constructor(opts: {
+    tableName: string;
+    region: string;
+    cacheMs: number;
+    client?: DynamoDBClient;
+    now?: () => number;
+  }) {
+    if (!opts.tableName) throw new Error("REGISTRY_TABLE is required in ddb registry mode");
+    this.tableName = opts.tableName;
+    this.cacheMs = opts.cacheMs;
+    this.client = opts.client ?? new DynamoDBClient({ region: opts.region });
+    this.now = opts.now ?? Date.now;
+  }
+
+  async lookup(orgId: string, appId: string): Promise<RegistryStatus> {
+    const key = `${orgId}/${appId}`;
+    const cached = this.cache.get(key);
+    if (cached && this.now() - cached.at < this.cacheMs) return cached.status;
+    let status: RegistryStatus;
+    try {
+      const res = await this.client.send(
+        new GetItemCommand({
+          TableName: this.tableName,
+          Key: { org_id: { S: orgId }, sk: { S: `app#${appId}` } },
+          ConsistentRead: true,
+          ProjectionExpression: "#s",
+          ExpressionAttributeNames: { "#s": "status" },
+        }),
+      );
+      const raw = res.Item?.status?.S;
+      status = raw === undefined ? "unknown" : raw === "active" ? "active" : "inactive";
+    } catch (err) {
+      // fail-closed: an unreachable registry denies, and the failure is not cached
+      throw new ServiceError("UNAVAILABLE", `registry lookup failed: ${(err as Error).message}`);
+    }
+    this.cache.set(key, { status, at: this.now() });
+    return status;
+  }
+
+  async listActive(): Promise<AppRef[]> {
+    const refs: AppRef[] = [];
+    let startKey: Record<string, AttributeValue> | undefined;
+    try {
+      do {
+        const res = await this.client.send(
+          new ScanCommand({
+            TableName: this.tableName,
+            FilterExpression: "begins_with(sk, :app) AND #s = :active",
+            ExpressionAttributeNames: { "#s": "status" },
+            ExpressionAttributeValues: { ":app": { S: "app#" }, ":active": { S: "active" } },
+            ProjectionExpression: "org_id, sk",
+            ExclusiveStartKey: startKey,
+          }),
+        );
+        for (const item of res.Items ?? []) {
+          const orgId = item.org_id?.S;
+          const sk = item.sk?.S;
+          if (orgId && sk?.startsWith("app#")) refs.push({ orgId, appId: sk.slice(4) });
+        }
+        startKey = res.LastEvaluatedKey;
+      } while (startKey);
+    } catch (err) {
+      throw new ServiceError("UNAVAILABLE", `registry scan failed: ${(err as Error).message}`);
+    }
+    return refs;
+  }
+
+  async reload(): Promise<void> {
+    this.cache.clear();
+  }
 }
 
 /**

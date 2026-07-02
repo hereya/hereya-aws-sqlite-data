@@ -66,7 +66,7 @@ export class AppWorker {
     return this.post({ action: "exec", ...req }, timeoutMs) as Promise<StatementResult>;
   }
 
-  async control(action: "begin" | "commit" | "rollback", timeoutMs: number): Promise<void> {
+  async control(action: "begin" | "commit" | "rollback" | "checkpoint", timeoutMs: number): Promise<void> {
     await this.post({ action }, timeoutMs);
   }
 

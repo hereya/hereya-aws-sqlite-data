@@ -49,6 +49,17 @@ export async function startTestService(overrides: Partial<Config> = {}): Promise
     registryCacheMs: 100,
     registryPollSeconds: 30,
     litestreamDisabled: true,
+    litestreamBin: "litestream",
+    litestreamConfigPath: join(dir, "litestream.yml"),
+    replicaBaseUrl: "",
+    litestreamSyncIntervalMs: 200,
+    litestreamRetention: "72h",
+    litestreamSnapshotInterval: "6h",
+    heartbeatEnabled: false,
+    heartbeatPeriodSeconds: 60,
+    heartbeatDimension: "test",
+    imdsEnabled: false,
+    drainMs: 100,
     ...overrides,
   };
 

@@ -21,9 +21,12 @@ export interface ServerDeps {
   manager: AppManager;
   txRegistry: TxRegistry;
   limiter: Limiter;
-  /** Extra hooks the AWS wiring adds later (registry sync, litestream state). */
+  /** Restore-before-first-query hook (hot-add); absent in bare-core tests. */
+  ensureServed?: (orgId: string, appId: string) => Promise<void>;
   onAdminSync?: () => Promise<{ added: number; removed: number }>;
   health?: () => Record<string, unknown>;
+  /** While draining (shutdown/spot notice), everything but /health gets 503. */
+  isDraining?: () => boolean;
 }
 
 interface AuditLine {
@@ -77,6 +80,9 @@ export function buildServer(deps: ServerDeps): Server {
     if (status !== "active") {
       throw new ServiceError("CROSS_ORG_DENIED", "unknown or inactive org/app pair");
     }
+    // Registry says active: make sure the local db is restored before any
+    // worker can create an empty file that would shadow the S3 replica.
+    if (deps.ensureServed) await deps.ensureServed(orgId, appId);
   }
 
   async function handleQuery(body: unknown): Promise<StatementResult> {
@@ -208,6 +214,9 @@ export function buildServer(deps: ServerDeps): Server {
           ...(deps.health?.() ?? {}),
         });
         return;
+      }
+      if (deps.isDraining?.()) {
+        throw new ServiceError("UNAVAILABLE", "instance is shutting down; retry shortly");
       }
       if (req.method !== "POST") {
         throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);

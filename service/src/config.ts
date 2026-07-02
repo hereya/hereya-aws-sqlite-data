@@ -18,19 +18,31 @@ export interface Config {
   registryCacheMs: number;
   registryPollSeconds: number;
   litestreamDisabled: boolean;
-}
-
-function intEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
-    throw new Error(`invalid ${name}: ${raw}`);
-  }
-  return n;
+  litestreamBin: string;
+  litestreamConfigPath: string;
+  replicaBaseUrl: string;
+  litestreamSyncIntervalMs: number;
+  litestreamRetention: string;
+  litestreamSnapshotInterval: string;
+  heartbeatEnabled: boolean;
+  heartbeatPeriodSeconds: number;
+  heartbeatDimension: string;
+  imdsEnabled: boolean;
+  drainMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  // port 0 is valid (ephemeral, used by tests); negatives and garbage are not
+  function intEnv(name: string, fallback: number): number {
+    const raw = env[name];
+    if (raw === undefined || raw === "") return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+      throw new Error(`invalid ${name}: ${raw}`);
+    }
+    return n;
+  }
+
   const registryMode = (env.REGISTRY_MODE ?? "ddb") as Config["registryMode"];
   if (registryMode !== "file" && registryMode !== "ddb") {
     throw new Error(`invalid REGISTRY_MODE: ${env.REGISTRY_MODE}`);
@@ -55,5 +67,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     registryCacheMs: intEnv("REGISTRY_CACHE_MS", 30_000),
     registryPollSeconds: intEnv("REGISTRY_POLL_SECONDS", 30),
     litestreamDisabled: env.LITESTREAM_DISABLED === "1" || env.LITESTREAM_DISABLED === "true",
+    litestreamBin: env.LITESTREAM_BIN ?? "litestream",
+    litestreamConfigPath: env.LITESTREAM_CONFIG_PATH ?? "/etc/dilaya/litestream.yml",
+    replicaBaseUrl: (env.REPLICA_BASE_URL ?? "").replace(/\/+$/, ""),
+    litestreamSyncIntervalMs: intEnv("LITESTREAM_SYNC_INTERVAL_MS", 1000),
+    litestreamRetention: env.LITESTREAM_RETENTION ?? "72h",
+    litestreamSnapshotInterval: env.LITESTREAM_SNAPSHOT_INTERVAL ?? "6h",
+    heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
+    heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
+    heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",
+    imdsEnabled: env.IMDS_ENABLED === "1" || env.IMDS_ENABLED === "true",
+    drainMs: intEnv("DRAIN_MS", 5_000),
   };
 }

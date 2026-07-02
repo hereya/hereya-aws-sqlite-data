@@ -27,7 +27,7 @@ interface ExecMessage {
 
 interface ControlMessage {
   id: number;
-  action: "begin" | "commit" | "rollback" | "close";
+  action: "begin" | "commit" | "rollback" | "checkpoint" | "close";
 }
 
 type WorkerMessage = ExecMessage | ControlMessage;
@@ -128,6 +128,11 @@ function handle(msg: WorkerMessage): WorkerReply {
       return { id: msg.id, ok: true };
     case "rollback":
       conn(true).exec("ROLLBACK");
+      return { id: msg.id, ok: true };
+    case "checkpoint":
+      // shutdown drain: fold the WAL into the main db so litestream's final
+      // sync ships a complete snapshot of the tail
+      conn(false).exec("PRAGMA wal_checkpoint(TRUNCATE)");
       return { id: msg.id, ok: true };
     case "close":
       try {
