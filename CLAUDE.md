@@ -45,6 +45,17 @@ runbook; this file is the working-agreement layer for agents.
   npx cdk deploy` — with `autoDelete=true`, `cdk destroy` removes bucket + table too.
 - Release: bump `hereyarc.yaml` version → commit → tag `v<version>` → push → `hereya publish`.
 
+## Observed behaviors (dev acceptance, 2026-07-02)
+
+- Kill-instance recovery: **53s** end-to-end (terminate → new on-demand instance →
+  restore → first successful query). Kill-process: systemd restart < 10s, no ASG event.
+- Noisy-neighbor: victim p95 143→144ms under a 40-bomb flood. A flooding app's QUEUED
+  requests can exceed API Gateway's 30s integration timeout → the gateway returns 503
+  (retryable) for those; per-app cap returns 429; the SQL deadline returns 408. All three
+  are contained to the offending app.
+- **Spot reality check**: t4g Spot went unfulfillable across 2 AZs + 2 sizes in eu-west-1
+  for >10 min — that's why the default is on-demand (`spotPercentage=0`); Spot is opt-in.
+
 ## Interfaces still owed to the connector track
 
 - `GET /stats?org_id&app_id → {dbSizeBytes}` (usage tool) and `POST /admin/delete-app`
