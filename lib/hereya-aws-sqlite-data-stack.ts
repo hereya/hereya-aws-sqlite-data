@@ -166,7 +166,8 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
     role.addToPolicy(
       new iam.PolicyStatement({
         sid: "LitestreamReplicaList",
-        actions: ["s3:ListBucket"],
+        // GetBucketLocation: litestream resolves the bucket region before restore
+        actions: ["s3:ListBucket", "s3:GetBucketLocation"],
         resources: [bucket.bucketArn],
       }),
     );
@@ -260,16 +261,29 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
       userData,
       requireImdsv2: true,
       associatePublicIpAddress: true,
-      // Spot: the workload tolerates interruption (ASG relaunches; Litestream
-      // restores). ONE_TIME so the ASG — not the Spot request — owns replacement.
-      spotOptions: { requestType: ec2.SpotRequestType.ONE_TIME },
+      // Spot-ness lives in the ASG's MixedInstancesPolicy below (a launch
+      // template with InstanceMarketOptions conflicts with mixed instances).
       // no keyPair: SSM Session Manager only (spec §3)
     });
 
+    // Still a singleton (one instance at a time — no litestream dual-writer),
+    // but replacements may land in EITHER public subnet and on either size:
+    // observed reality is that a single-AZ single-type Spot ASG stalls
+    // indefinitely on "insufficient capacity" and never self-heals.
     const asg = new autoscaling.AutoScalingGroup(this, "Asg", {
       vpc,
-      vpcSubnets: { subnets: [vpc.publicSubnets[0]!] }, // single AZ v1 (spec §3)
-      launchTemplate,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      mixedInstancesPolicy: {
+        launchTemplate,
+        launchTemplateOverrides: [
+          { instanceType: new ec2.InstanceType(instanceType) },
+          { instanceType: new ec2.InstanceType(input("fallbackInstanceType", "t4g.small")) },
+        ],
+        instancesDistribution: {
+          onDemandPercentageAboveBaseCapacity: 0, // all Spot
+          spotAllocationStrategy: autoscaling.SpotAllocationStrategy.CAPACITY_OPTIMIZED,
+        },
+      },
       minCapacity: 1,
       maxCapacity: 1,
       updatePolicy: autoscaling.UpdatePolicy.replacingUpdate(),

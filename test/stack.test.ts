@@ -43,22 +43,27 @@ test("registry table: org_id/sk keys, on-demand billing, PITR", () => {
   });
 });
 
-test("launch template: no SSH key, IMDSv2 required, Spot one-time", () => {
+test("launch template: no SSH key, IMDSv2 required", () => {
   const lts = template.findResources("AWS::EC2::LaunchTemplate");
   const lt = Object.values(lts)[0]!;
   const data = lt.Properties.LaunchTemplateData;
   assert.equal(data.KeyName, undefined, "SSM only — no SSH keypair");
   assert.equal(data.MetadataOptions?.HttpTokens, "required");
-  assert.equal(data.InstanceMarketOptions?.MarketType, "spot");
-  assert.equal(data.InstanceMarketOptions?.SpotOptions?.SpotInstanceType, "one-time");
 });
 
-test("ASG is a 1/1/1 singleton with capacity rebalance OFF", () => {
-  template.hasResourceProperties("AWS::AutoScaling::AutoScalingGroup", {
-    MinSize: "1",
-    MaxSize: "1",
-    CapacityRebalance: false,
-  });
+test("ASG: 1/1/1 singleton, all-Spot mixed instances, capacity rebalance OFF", () => {
+  const asgs = template.findResources("AWS::AutoScaling::AutoScalingGroup");
+  const asg = Object.values(asgs)[0]!;
+  assert.equal(asg.Properties.MinSize, "1");
+  assert.equal(asg.Properties.MaxSize, "1");
+  assert.equal(asg.Properties.CapacityRebalance, false);
+  const dist = asg.Properties.MixedInstancesPolicy.InstancesDistribution;
+  assert.equal(dist.OnDemandPercentageAboveBaseCapacity, 0, "all Spot");
+  assert.equal(dist.SpotAllocationStrategy, "capacity-optimized");
+  const overrides = asg.Properties.MixedInstancesPolicy.LaunchTemplate.Overrides;
+  assert.ok(overrides.length >= 2, "at least two instance-type fallbacks");
+  // replacements must be able to land in more than one AZ
+  assert.ok((asg.Properties.VPCZoneIdentifier ?? []).length >= 2, "ASG must span >=2 subnets");
 });
 
 test("no NAT gateways and no interface endpoints (cost floor)", () => {

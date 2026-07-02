@@ -32,8 +32,25 @@ aws([
 ]);
 const t0 = Date.now();
 
-// 2. wait for the API to come back with the SAME data (loss window aside)
-const recoveredIn = await waitFor(
+// 2. the ASG must bring up a DIFFERENT instance (the old one keeps answering
+// for a few seconds while it shuts down — that is not recovery)
+let newId = null;
+await waitFor(
+  "replacement instance in service",
+  () => {
+    const { instanceId: current } = asgInstanceId(stackName, region);
+    if (current && current !== instanceId) {
+      newId = current;
+      return true;
+    }
+    return false;
+  },
+  { timeoutMs: 10 * 60_000, intervalMs: 10_000 },
+);
+console.log(`replacement ${newId} in service after ${Math.round((Date.now() - t0) / 1000)}s`);
+
+// 3. the new instance serves the SAME data (restore-then-serve)
+await waitFor(
   "API recovered with canary data",
   async () => {
     const res = await q("SELECT COUNT(*) AS total FROM canary");
@@ -41,11 +58,7 @@ const recoveredIn = await waitFor(
   },
   { timeoutMs: 10 * 60_000, intervalMs: 10_000 },
 );
-
-const { instanceId: newId } = asgInstanceId(stackName, region);
 console.log(
-  `RECOVERED in ${Math.round((Date.now() - t0) / 1000)}s (poll granularity 10s): ` +
-    `new instance ${newId}, canary rows intact (${countBefore})`,
+  `kill-instance acceptance PASSED — full recovery with data intact in ${Math.round((Date.now() - t0) / 1000)}s ` +
+    `(${countBefore} canary row(s), ${instanceId} -> ${newId})`,
 );
-if (newId === instanceId) throw new Error("instance id did not change — ASG did not replace it?");
-console.log(`kill-instance acceptance PASSED (${Math.round(recoveredIn / 1000)}s to recovery)`);
