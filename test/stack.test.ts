@@ -101,6 +101,41 @@ test("VPC Link + Cloud Map service exist; instance admits only the VPC Link SG",
   assert.ok(toInstance[0]!.Properties.SourceSecurityGroupId, "ingress must be SG-scoped, not CIDR");
 });
 
+test("heartbeat alarm is a dead-man switch (missing data = breaching)", () => {
+  const alarms = template.findResources("AWS::CloudWatch::Alarm");
+  const list = Object.values(alarms);
+  assert.equal(list.length, 2);
+  for (const alarm of list) {
+    assert.equal(alarm.Properties.TreatMissingData, "breaching", "silence must trip the alarm");
+    assert.equal(alarm.Properties.ComparisonOperator, "LessThanThreshold");
+    assert.ok((alarm.Properties.AlarmActions ?? []).length >= 1, "alarm must notify");
+    assert.ok((alarm.Properties.OKActions ?? []).length >= 1, "recovery must notify too");
+  }
+});
+
+test("telegram relay appears only when its inputs are set", () => {
+  // default synth (no telegram inputs): no Lambda in the stack at all
+  const fns = template.findResources("AWS::Lambda::Function");
+  const relays = Object.keys(fns).filter((k) => k.startsWith("HeartbeatRelay"));
+  assert.equal(relays.length, 0);
+
+  const app2 = new cdk.App();
+  process.env.telegramBotTokenParam = "/dilaya/test/telegram-token";
+  process.env.telegramChatId = "12345";
+  try {
+    const stack2 = new HereyaAwsSqliteDataStack(app2, "TestStackTg", {
+      env: { account: "111111111111", region: "eu-west-1" },
+    });
+    const template2 = Template.fromStack(stack2);
+    const fns2 = Object.keys(template2.findResources("AWS::Lambda::Function"));
+    assert.ok(fns2.some((k) => k.startsWith("HeartbeatRelay")), "relay must exist with inputs set");
+    template2.resourceCountIs("AWS::SNS::Subscription", 1);
+  } finally {
+    delete process.env.telegramBotTokenParam;
+    delete process.env.telegramChatId;
+  }
+});
+
 test("artifact pointer parameter exists (service-only update path)", () => {
   template.hasResourceProperties("AWS::SSM::Parameter", {
     Name: Match.stringLikeRegexp("/TestStack/service-artifact"),

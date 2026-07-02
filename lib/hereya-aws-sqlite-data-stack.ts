@@ -3,12 +3,17 @@ import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpIamAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import { HttpServiceDiscoveryIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as autoscaling from "aws-cdk-lib/aws-autoscaling";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cwActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as snsSubs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import type { Construct } from "constructs";
 import { execSync } from "node:child_process";
@@ -266,10 +271,84 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
       minCapacity: 1,
       maxCapacity: 1,
       updatePolicy: autoscaling.UpdatePolicy.replacingUpdate(),
+      groupMetrics: [autoscaling.GroupMetrics.all()],
     });
     // Capacity rebalance must stay OFF: it launches the replacement while the
     // old instance is alive → two litestream writers on one generation path.
     (asg.node.defaultChild as autoscaling.CfnAutoScalingGroup).capacityRebalance = false;
+
+    // --- Heartbeat dead-man switch + Telegram relay (spec §3, « le silence est
+    // interdit ») ------------------------------------------------------------
+    const alertTopic = new sns.Topic(this, "AlertTopic");
+
+    const heartbeatAlarm = new cloudwatch.Alarm(this, "HeartbeatAlarm", {
+      alarmName: `${this.stackName}-heartbeat`,
+      alarmDescription:
+        "Dilaya SQLite Data API heartbeat is silent (instance dead, service wedged, replication down, or network cut)",
+      metric: new cloudwatch.Metric({
+        namespace: "Dilaya/SqliteData",
+        metricName: "Heartbeat",
+        dimensionsMap: { stack: this.stackName },
+        statistic: "Sum",
+        period: cdk.Duration.minutes(1),
+      }),
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      threshold: 1,
+      evaluationPeriods: 5,
+      datapointsToAlarm: 3,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+    });
+    heartbeatAlarm.addAlarmAction(new cwActions.SnsAction(alertTopic));
+    heartbeatAlarm.addOkAction(new cwActions.SnsAction(alertTopic));
+
+    const capacityAlarm = new cloudwatch.Alarm(this, "CapacityAlarm", {
+      alarmName: `${this.stackName}-no-instance`,
+      alarmDescription: "The Data API ASG has zero in-service instances",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/AutoScaling",
+        metricName: "GroupInServiceInstances",
+        dimensionsMap: { AutoScalingGroupName: asg.autoScalingGroupName },
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(1),
+      }),
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      threshold: 1,
+      evaluationPeriods: 3,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+    });
+    capacityAlarm.addAlarmAction(new cwActions.SnsAction(alertTopic));
+    capacityAlarm.addOkAction(new cwActions.SnsAction(alertTopic));
+
+    // Telegram relay is wired only when the package inputs are provided; the
+    // alarms exist regardless (visible in CloudWatch, other subscribers possible).
+    const telegramTokenParam = input("telegramBotTokenParam", "");
+    const telegramChatId = input("telegramChatId", "");
+    if (telegramTokenParam !== "" && telegramChatId !== "") {
+      const relay = new lambda.Function(this, "HeartbeatRelay", {
+        runtime: lambda.Runtime.NODEJS_22_X,
+        architecture: lambda.Architecture.ARM_64,
+        handler: "index.handler",
+        code: lambda.Code.fromAsset(join(repoRoot, "lib", "heartbeat-relay")),
+        timeout: cdk.Duration.seconds(30),
+        memorySize: 128,
+        environment: {
+          TELEGRAM_TOKEN_PARAM: telegramTokenParam,
+          TELEGRAM_CHAT_ID: telegramChatId,
+        },
+      });
+      relay.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ["ssm:GetParameter"],
+          resources: [
+            cdk.Arn.format(
+              { service: "ssm", resource: "parameter", resourceName: telegramTokenParam.replace(/^\//, "") },
+              this,
+            ),
+          ],
+        }),
+      );
+      alertTopic.addSubscription(new snsSubs.LambdaSubscription(relay));
+    }
 
     // --- Package outputs (consumer env contract) -----------------------------
     new cdk.CfnOutput(this, "awsRegion", { value: this.region });
