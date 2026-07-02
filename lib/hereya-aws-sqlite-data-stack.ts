@@ -267,9 +267,12 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
     });
 
     // Still a singleton (one instance at a time — no litestream dual-writer),
-    // but replacements may land in EITHER public subnet and on either size:
-    // observed reality is that a single-AZ single-type Spot ASG stalls
-    // indefinitely on "insufficient capacity" and never self-heals.
+    // but replacements may land in EITHER public subnet and on either size.
+    // Purchasing default is ON-DEMAND: observed reality (eu-west-1, t4g) is
+    // that Spot can be unfulfillable across AZs and sizes for extended periods,
+    // which turns the spec's ~2-min recovery into an open-ended outage. Spot
+    // remains an explicit opt-in via spotPercentage (0-100).
+    const spotPercentage = Math.min(100, Math.max(0, Number(input("spotPercentage", "0")) || 0));
     const asg = new autoscaling.AutoScalingGroup(this, "Asg", {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
@@ -280,7 +283,7 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
           { instanceType: new ec2.InstanceType(input("fallbackInstanceType", "t4g.small")) },
         ],
         instancesDistribution: {
-          onDemandPercentageAboveBaseCapacity: 0, // all Spot
+          onDemandPercentageAboveBaseCapacity: 100 - spotPercentage,
           spotAllocationStrategy: autoscaling.SpotAllocationStrategy.CAPACITY_OPTIMIZED,
         },
       },

@@ -58,7 +58,7 @@ test("ASG: 1/1/1 singleton, all-Spot mixed instances, capacity rebalance OFF", (
   assert.equal(asg.Properties.MaxSize, "1");
   assert.equal(asg.Properties.CapacityRebalance, false);
   const dist = asg.Properties.MixedInstancesPolicy.InstancesDistribution;
-  assert.equal(dist.OnDemandPercentageAboveBaseCapacity, 0, "all Spot");
+  assert.equal(dist.OnDemandPercentageAboveBaseCapacity, 100, "on-demand by default (Spot is opt-in)");
   assert.equal(dist.SpotAllocationStrategy, "capacity-optimized");
   const overrides = asg.Properties.MixedInstancesPolicy.LaunchTemplate.Overrides;
   assert.ok(overrides.length >= 2, "at least two instance-type fallbacks");
