@@ -1,0 +1,22 @@
+{
+  "name": "hereya-aws-sqlite-data",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hereya package dilaya/aws-sqlite-data: CDK stack + SQLite Data API service",
+  "type": "module",
+  "scripts": {
+    "ensure-node": "node scripts/ensure-node.mjs",
+    "test": "npm run ensure-node --silent && .toolchain/node/bin/node --test 'service/test/**/*.test.ts'",
+    "test:unit": "npm run ensure-node --silent && .toolchain/node/bin/node --test 'service/test/unit/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "build-service": "node scripts/build-service.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "aws-cdk-lib": "^2.170.0",
+    "constructs": "^10.4.2",
+    "esbuild": "^0.24.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.0"
+  }
+}
