@@ -11,6 +11,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3assets from "aws-cdk-lib/aws-s3-assets";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as snsSubs from "aws-cdk-lib/aws-sns-subscriptions";
@@ -222,6 +223,23 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
     );
     artifact.grantRead(role);
 
+    // --- Capability token secret (spec §6 caller-binding) --------------------
+    // The connector mints per-request HMAC capability tokens with this secret;
+    // the VM re-derives the HMAC and checks the token's (org, app) matches the
+    // request. RAW random string — no SecretStringTemplate/GenerateStringKey —
+    // so GetSecretValue returns the secret verbatim (both the service and the
+    // connector read SecretString as-is, not a JSON key).
+    const capabilitySecret = new secretsmanager.Secret(this, "CapabilitySecret", {
+      description: "Dilaya SQLite Data API capability-token HMAC secret (shared with the connector)",
+      generateSecretString: {
+        passwordLength: 48,
+        excludePunctuation: true,
+      },
+      removalPolicy,
+    });
+    // The instance role reads the secret at boot to verify incoming tokens.
+    capabilitySecret.grantRead(role);
+
     // --- Launch template + self-healing Spot singleton ----------------------
     const userData = ec2.UserData.custom(
       buildUserData({
@@ -247,6 +265,11 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
           HEARTBEAT_DIMENSION: this.stackName,
           IMDS_ENABLED: "1",
           CLOUDMAP_SERVICE_ID: discoveryService.serviceId,
+          // Capability-token validation: the service fetches the secret by ARN
+          // at boot. Enforcement defaults OFF (rollout-compat window) — flip via
+          // the capabilityEnforce input once every connector mints tokens.
+          CAPABILITY_SECRET_ARN: capabilitySecret.secretArn,
+          CAPABILITY_ENFORCE: input("capabilityEnforce", "false"),
         },
       }),
     );
@@ -402,6 +425,22 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
             Resource: [
               `arn:aws:execute-api:${this.region}:${this.account}:${httpApi.apiId}/*/*/*`,
             ],
+          },
+        ],
+      }),
+    });
+    // The connector reads this secret to mint capability tokens; the iamPolicy*
+    // output auto-attaches secretsmanager:GetSecretValue to the connector's role
+    // (mirrors iamPolicySqliteRegistry / iamPolicySqliteDataApi wiring).
+    new cdk.CfnOutput(this, "capabilitySecretArn", { value: capabilitySecret.secretArn });
+    new cdk.CfnOutput(this, "iamPolicySqliteCapability", {
+      value: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [
+          {
+            Effect: "Allow",
+            Action: ["secretsmanager:GetSecretValue"],
+            Resource: [capabilitySecret.secretArn],
           },
         ],
       }),

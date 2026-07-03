@@ -61,6 +61,8 @@ export async function startTestService(overrides: Partial<Config> = {}): Promise
     imdsEnabled: false,
     drainMs: 100,
     cloudMapServiceId: "",
+    capabilitySecret: "",
+    capabilityEnforce: false,
     ...overrides,
   };
 
@@ -97,10 +99,11 @@ export async function call(
   baseUrl: string,
   path: string,
   body?: unknown,
+  headers?: Record<string, string>,
 ): Promise<{ status: number; body: any }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method: body === undefined ? "GET" : "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: await res.json() };

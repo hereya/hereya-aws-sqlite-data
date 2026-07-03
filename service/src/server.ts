@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { statSync } from "node:fs";
 import type { Config } from "./config.ts";
+import { verifyCapability } from "./capability.ts";
 import { ServiceError, toServiceError } from "./errors.ts";
 import { bindParams, type StatementResult } from "./marshalling.ts";
 import type { AppManager } from "./apps.ts";
@@ -46,6 +47,22 @@ function audit(line: AuditLine): void {
   console.log(JSON.stringify({ type: "audit", ...line }));
 }
 
+// The capability header the connector attaches per request (Node lowercases
+// header names). Its (org, app) claim must equal the pair the request touches.
+const CAPABILITY_HEADER = "x-dilaya-capability";
+
+// POST routes that carry an (org_id, app_id) and are therefore capability-gated.
+// NOT gated: /admin/sync (no pair) — /admin/delete-app IS gated even though it
+// skips the active-status check (IAM + capability still bind the caller).
+const CAPABILITY_GATED_POST = new Set([
+  "/query",
+  "/batch-execute",
+  "/tx/begin",
+  "/tx/commit",
+  "/tx/rollback",
+  "/admin/delete-app",
+]);
+
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -76,6 +93,36 @@ function send(res: ServerResponse, status: number, body: unknown): void {
 export function buildServer(deps: ServerDeps): Server {
   const { cfg, registry, manager, txRegistry, limiter } = deps;
   const startedAt = Date.now();
+
+  /**
+   * Capability gate — binds the SigV4 caller to the (org, app) it operates on.
+   * ADDITIONAL to authorize(); never a replacement. Runs before any DB work.
+   *   - header present → must verify AND its (org, app) must equal the request's
+   *     pair, else CAPABILITY_DENIED (403).
+   *   - header absent  → enforce=true denies; enforce=false allows but logs a
+   *     distinct cap_missing warn (the rollout-compat window).
+   */
+  function enforceCapability(
+    capHeader: string | undefined,
+    routeName: string,
+    orgId: string | undefined,
+    appId: string | undefined,
+  ): void {
+    if (capHeader !== undefined) {
+      const res = verifyCapability(capHeader, cfg.capabilitySecret, Math.floor(Date.now() / 1000));
+      if (!res.ok) {
+        throw new ServiceError("CAPABILITY_DENIED", `capability rejected: ${res.reason}`);
+      }
+      if (res.orgId !== orgId || res.appId !== appId) {
+        throw new ServiceError("CAPABILITY_DENIED", "capability rejected: pair_mismatch");
+      }
+      return;
+    }
+    if (cfg.capabilityEnforce) {
+      throw new ServiceError("CAPABILITY_DENIED", "capability token required");
+    }
+    console.warn(JSON.stringify({ type: "cap_missing", route: routeName, orgId, appId }));
+  }
 
   /** Fail-closed org/app check — the VM-side half of the spec §6 double control. */
   async function authorize(orgId: string, appId: string): Promise<void> {
@@ -224,6 +271,8 @@ export function buildServer(deps: ServerDeps): Server {
     const started = Date.now();
     const url = new URL(req.url ?? "/", "http://localhost");
     const route = `${req.method} ${url.pathname}`;
+    const rawCap = req.headers[CAPABILITY_HEADER];
+    const capHeader = Array.isArray(rawCap) ? rawCap[0] : rawCap;
     let orgId: string | undefined;
     let appId: string | undefined;
     try {
@@ -243,6 +292,7 @@ export function buildServer(deps: ServerDeps): Server {
       if (route === "GET /stats") {
         orgId = url.searchParams.get("org_id") ?? undefined;
         appId = url.searchParams.get("app_id") ?? undefined;
+        enforceCapability(capHeader, route, orgId, appId);
         const stats = await handleStats(url);
         audit({ ts: new Date().toISOString(), route, orgId, appId, allowed: true, ms: Date.now() - started });
         send(res, 200, stats);
@@ -255,6 +305,11 @@ export function buildServer(deps: ServerDeps): Server {
       if (typeof body === "object" && body !== null) {
         orgId = (body as Record<string, unknown>).org_id as string | undefined;
         appId = (body as Record<string, unknown>).app_id as string | undefined;
+      }
+      // Capability gate BEFORE the handler runs, on the exact (org, app) the
+      // handler will act on. /admin/sync carries no pair and is not gated.
+      if (CAPABILITY_GATED_POST.has(url.pathname)) {
+        enforceCapability(capHeader, route, orgId, appId);
       }
       let payload: unknown;
       switch (url.pathname) {

@@ -147,6 +147,31 @@ test("artifact pointer parameter exists (service-only update path)", () => {
   });
 });
 
+test("capability secret is created, granted to the instance role, and exported", () => {
+  template.resourceCountIs("AWS::SecretsManager::Secret", 1);
+  // RAW random string: no SecretStringTemplate/GenerateStringKey (GetSecretValue
+  // returns the secret verbatim for both the service and the connector).
+  template.hasResourceProperties("AWS::SecretsManager::Secret", {
+    GenerateSecretString: { PasswordLength: 48, ExcludePunctuation: true },
+  });
+  // the instance role must be able to read it (grantRead → GetSecretValue)
+  const policies = template.findResources("AWS::IAM::Policy");
+  const grantsGet = Object.values(policies).some((p) =>
+    p.Properties.PolicyDocument.Statement.some((s: { Action?: string | string[] }) => {
+      const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+      return actions.includes("secretsmanager:GetSecretValue");
+    }),
+  );
+  assert.ok(grantsGet, "instance role must be granted secretsmanager:GetSecretValue");
+  // new consumer outputs for the connector
+  const outputs = template.findOutputs("*");
+  assert.ok(outputs.capabilitySecretArn, "missing output capabilitySecretArn");
+  assert.ok(outputs.iamPolicySqliteCapability, "missing output iamPolicySqliteCapability");
+  const raw = JSON.stringify(outputs.iamPolicySqliteCapability!.Value);
+  assert.ok(raw.includes("2012-10-17"));
+  assert.ok(raw.includes("secretsmanager:GetSecretValue"));
+});
+
 test("exports the consumer env contract", () => {
   const outputs = template.findOutputs("*");
   for (const key of [

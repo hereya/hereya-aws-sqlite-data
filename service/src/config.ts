@@ -1,3 +1,5 @@
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+
 export interface Config {
   port: number;
   dbDir: string;
@@ -30,6 +32,12 @@ export interface Config {
   imdsEnabled: boolean;
   drainMs: number;
   cloudMapServiceId: string;
+  // Per-request capability token (spec §6 caller-binding). The shared HMAC
+  // secret is resolved at boot: from Secrets Manager when CAPABILITY_SECRET_ARN
+  // is set (prod), else from the CAPABILITY_SECRET env var (local/tests). Empty
+  // is only tolerated when enforcement is off (rollout-compat window).
+  capabilitySecret: string;
+  capabilityEnforce: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -80,5 +88,40 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     imdsEnabled: env.IMDS_ENABLED === "1" || env.IMDS_ENABLED === "true",
     drainMs: intEnv("DRAIN_MS", 5_000),
     cloudMapServiceId: env.CLOUDMAP_SERVICE_ID ?? "",
+    // The Secrets Manager fetch is async (see resolveCapabilitySecret); here we
+    // only seed the plaintext-env fallback used when no ARN is provided.
+    capabilitySecret: env.CAPABILITY_SECRET ?? "",
+    capabilityEnforce: env.CAPABILITY_ENFORCE === "true",
   };
+}
+
+/**
+ * Resolve the capability HMAC secret at boot. When CAPABILITY_SECRET_ARN is set
+ * (the CDK stack injects it), fetch the plaintext SecretString from Secrets
+ * Manager; otherwise fall back to the CAPABILITY_SECRET env var already loaded
+ * into `cfg.capabilitySecret`. Fails closed: if enforcement is on but no secret
+ * could be resolved, the boot aborts rather than run unauthenticated.
+ *
+ * The stack generates a RAW random secret string (no SecretStringTemplate), so
+ * SecretString is the secret verbatim — no JSON key to unwrap.
+ */
+export async function resolveCapabilitySecret(
+  cfg: Config,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  let secret = cfg.capabilitySecret;
+  const arn = env.CAPABILITY_SECRET_ARN;
+  if (arn !== undefined && arn !== "") {
+    const client = new SecretsManagerClient({ region: cfg.awsRegion });
+    try {
+      const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
+      secret = res.SecretString ?? "";
+    } finally {
+      client.destroy();
+    }
+  }
+  if (cfg.capabilityEnforce && secret === "") {
+    throw new Error("CAPABILITY_ENFORCE is on but no capability secret could be resolved");
+  }
+  return secret;
 }
