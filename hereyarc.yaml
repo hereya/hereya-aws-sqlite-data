@@ -1,6 +1,11 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.1
+version: 0.1.2
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
 infra: aws
+parameters:
+  capabilityEnforce:
+    description: "When 'true', the Data API REQUIRES a valid x-dilaya-capability token on every data route (missing or invalid -> 403 CAPABILITY_DENIED). 'false' (default) = warn mode: the token is validated when present but a request without one is allowed (logging cap_missing). Flip to 'true' once every caller (connector + per-app Lambdas) mints tokens."
+    mandatory: false
+    default: "false"
