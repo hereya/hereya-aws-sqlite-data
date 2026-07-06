@@ -40,6 +40,8 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 | `POST /batch-execute` | `{org_id, app_id, sql, parameterSets, transactionId?}` | chunked inserts |
 | `POST /tx/begin\|commit\|rollback` | `{org_id, app_id, transactionId?}` | tx ids are pair-scoped; idle 15s / max 60s |
 | `POST /admin/sync` | `{}` | reconcile served apps against the registry now |
+| `POST /admin/delete-app` | `{org_id, app_id}` | tears down the app's local db (close executor, drop from litestream, delete local file); **S3 replica retained**; used by the connector's `drop-schema` |
+| `GET /stats?org_id&app_id` | – | `{dbSizeBytes}` (db + WAL on disk); used by the connector's `get-usage-report` |
 | `GET /health` | – | status, apps, litestream up/down |
 
 ## Package contract

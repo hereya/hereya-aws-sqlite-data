@@ -56,8 +56,11 @@ runbook; this file is the working-agreement layer for agents.
 - **Spot reality check**: t4g Spot went unfulfillable across 2 AZs + 2 sizes in eu-west-1
   for >10 min — that's why the default is on-demand (`spotPercentage=0`); Spot is opt-in.
 
-## Interfaces still owed to the connector track
+## Connector-track interfaces (implemented)
 
-- `GET /stats?org_id&app_id → {dbSizeBytes}` (usage tool) and `POST /admin/delete-app`
-  (drop-schema teardown: close executor, drop from litestream config, delete local file,
-  KEEP S3 replica) — spec'd in the plan, not yet implemented.
+- `GET /stats?org_id&app_id → {dbSizeBytes}` — capability-gated usage endpoint; the connector's
+  `get-usage-report` calls it.
+- `POST /admin/delete-app {org_id, app_id}` — drop-schema teardown: close executor, drop from
+  litestream config, delete the local file, **KEEP the S3 replica**. Capability-gated but skips
+  the active-status check (the connector flips the registry row to `deleting` first); the
+  connector's `drop-schema` calls it.
