@@ -106,6 +106,33 @@ test("VPC Link + Cloud Map service exist; instance admits only the VPC Link SG",
   assert.ok(toInstance[0]!.Properties.SourceSecurityGroupId, "ingress must be SG-scoped, not CIDR");
 });
 
+test("cloud map deregister-on-delete guards the service deletion", () => {
+  const crs = template.findResources("Custom::CloudMapDeregister");
+  const entries = Object.entries(crs);
+  assert.equal(entries.length, 1);
+  const [, cr] = entries[0]!;
+  assert.ok(cr!.Properties.ServiceId, "must target the discovery service id");
+  // the explicit dependency is what makes CloudFormation delete the custom
+  // resource (and run its deregister) BEFORE deleting the service
+  const deps: string[] = cr!.DependsOn ?? [];
+  assert.ok(
+    deps.some((d) => d.startsWith("NamespaceDataApiService")),
+    "must depend on the discovery service",
+  );
+  // deregistration rights are scoped to this service (plus the unscoped
+  // GetOperation poll — operations have no service ARN)
+  const policies = template.findResources("AWS::IAM::Policy");
+  const fnPolicy = Object.entries(policies).find(([k]) => k.startsWith("CloudMapDeregisterFn"));
+  assert.ok(fnPolicy, "deregister fn must have an inline policy");
+  const statements = fnPolicy![1]!.Properties.PolicyDocument.Statement as Array<{
+    Action: string | string[];
+    Resource: unknown;
+  }>;
+  const dereg = statements.find((s) => JSON.stringify(s.Action).includes("DeregisterInstance"));
+  assert.ok(dereg, "must allow DeregisterInstance");
+  assert.notEqual(JSON.stringify(dereg!.Resource), '"*"', "DeregisterInstance must be service-scoped");
+});
+
 test("heartbeat alarm is a dead-man switch (missing data = breaching)", () => {
   const alarms = template.findResources("AWS::CloudWatch::Alarm");
   const list = Object.values(alarms);
