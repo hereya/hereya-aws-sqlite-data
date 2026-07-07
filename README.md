@@ -91,11 +91,12 @@ node scripts/acceptance/noisy-neighbor.mjs <stackName>            # flood one ap
   interruptions drain (503 + checkpoint + final sync) to ~zero.
 - Capacity rebalance stays OFF (two concurrent litestream writers on one generation path
   would corrupt it). Future overlap-style replacement requires the documented DDB lease.
-- **`cdk destroy` caveat**: stack deletion terminates the instance without a drain, so its
-  Cloud Map registration survives and blocks the discovery-service deletion. If destroy
-  fails on the namespace service: `aws servicediscovery list-instances --service-id <id>`,
-  deregister each, re-run destroy. (Future work: a custom resource that force-deregisters
-  on delete.)
+- **`cdk destroy` caveat (mitigated)**: stack deletion terminates the instance without a
+  drain, so its Cloud Map registration survives and would block the discovery-service
+  deletion. A custom resource (`CloudMapDeregisterOnDelete`) now force-deregisters any
+  lingering instances before the service is deleted — destroy completes in one pass. It
+  fails open, so if deregistration itself errors the old manual runbook still applies:
+  `aws servicediscovery list-instances --service-id <id>`, deregister each, re-run destroy.
 - **Purchasing**: on-demand by default. Spot (`spotPercentage=100`) is cheaper but was
   observed unfulfillable across 2 AZs + 2 instance sizes for >10 min in eu-west-1 — accept
   open-ended outages before enabling it.

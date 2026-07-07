@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.4
+version: 0.1.5
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
