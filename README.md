@@ -73,6 +73,7 @@ node scripts/acceptance/kill-instance.mjs <stackName>             # terminate �
 node scripts/acceptance/kill-process.mjs <stackName>              # SIGKILL → systemd restart, no ASG event
 node scripts/acceptance/cut-network.mjs <stackName>               # SG swap → dead-man ALARM → restore → OK
 node scripts/acceptance/noisy-neighbor.mjs <stackName>            # flood one app → other app unaffected
+.toolchain/node/bin/node scripts/acceptance/restore-legacy-0-3.mjs <stackName>  # 0.3-format replica restored by the 0.5 service
 ```
 
 ## Ops runbook
