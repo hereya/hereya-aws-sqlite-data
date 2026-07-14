@@ -216,4 +216,5 @@ test("exports the consumer env contract", () => {
   const raw = JSON.stringify(outputs.iamPolicySqliteRegistry!.Value);
   assert.ok(raw.includes("2012-10-17"));
   assert.ok(raw.includes("dynamodb:PutItem"));
+  assert.ok(raw.includes("dynamodb:Scan")); // layer-sync sweep (connector)
 });

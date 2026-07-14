@@ -490,6 +490,9 @@ exports.handler = async (event) => {
               "dynamodb:UpdateItem",
               "dynamodb:DeleteItem",
               "dynamodb:Query",
+              // Scan: the connector's layer-sync sweep enumerates deployed
+              // backends across ALL orgs (app# rows with lambdaFunctionName).
+              "dynamodb:Scan",
             ],
             Resource: [table.tableArn],
           },
