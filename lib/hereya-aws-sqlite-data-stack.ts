@@ -327,6 +327,7 @@ exports.handler = async (event) => {
       buildUserData({
         awsRegion: this.region,
         artifactParamName: artifactParam.parameterName,
+        artifactHash: artifact.assetHash,
         serviceEnv: {
           NODE_ENV: "production",
           PORT: String(servicePort),
@@ -394,7 +395,19 @@ exports.handler = async (event) => {
       },
       minCapacity: 1,
       maxCapacity: 1,
-      updatePolicy: autoscaling.UpdatePolicy.replacingUpdate(),
+      // Rolling update with minInstancesInService=0 = TERMINATE-BEFORE-LAUNCH:
+      // CloudFormation kills the old instance, then brings up the new one — the
+      // same sequence as the tested kill-instance recovery (~1 min gap), and the
+      // only order compatible with the litestream single-writer invariant. Do
+      // NOT switch back to replacingUpdate(): it runs old and new side by side.
+      // Combined with the artifact hash in user-data, every new service build
+      // rolls the instance at deploy time (no manual bounce).
+      updatePolicy: autoscaling.UpdatePolicy.rollingUpdate({
+        maxBatchSize: 1,
+        minInstancesInService: 0,
+        pauseTime: cdk.Duration.seconds(0),
+        waitOnResourceSignals: false,
+      }),
       groupMetrics: [autoscaling.GroupMetrics.all()],
     });
     // Capacity rebalance must stay OFF: it launches the replacement while the

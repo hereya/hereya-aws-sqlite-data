@@ -66,6 +66,23 @@ test("ASG: 1/1/1 singleton, all-Spot mixed instances, capacity rebalance OFF", (
   assert.ok((asg.Properties.VPCZoneIdentifier ?? []).length >= 2, "ASG must span >=2 subnets");
 });
 
+test("ASG update policy: rolling update, terminate-before-launch (single litestream writer)", () => {
+  const asgs = template.findResources("AWS::AutoScaling::AutoScalingGroup");
+  const asg = Object.values(asgs)[0]!;
+  const rolling = asg.UpdatePolicy?.AutoScalingRollingUpdate;
+  assert.ok(rolling, "must use AutoScalingRollingUpdate (replacingUpdate runs old+new side by side)");
+  assert.equal(rolling.MinInstancesInService, 0, "old instance must terminate BEFORE the new one launches");
+  assert.equal(rolling.MaxBatchSize, 1);
+  assert.equal(asg.UpdatePolicy?.AutoScalingReplacingUpdate, undefined);
+});
+
+test("user-data embeds the service artifact hash (deploy rolls the instance)", () => {
+  const lts = template.findResources("AWS::EC2::LaunchTemplate");
+  const lt = Object.values(lts)[0]!;
+  const userData = JSON.stringify(lt.Properties.LaunchTemplateData.UserData);
+  assert.ok(userData.includes("service-artifact-hash:"), "artifact hash line must be in user-data");
+});
+
 test("no NAT gateways and no interface endpoints (cost floor)", () => {
   template.resourceCountIs("AWS::EC2::NatGateway", 0);
   const endpoints = template.findResources("AWS::EC2::VPCEndpoint");
