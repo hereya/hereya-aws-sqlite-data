@@ -20,7 +20,9 @@ runbook; this file is the working-agreement layer for agents.
 4. **No S3 lifecycle rules / versioning on the replica bucket** — Litestream owns retention.
    Template test enforces it.
 5. **Capacity rebalance OFF** on the ASG — replacement-before-terminate would run two
-   litestream writers on one generation path.
+   litestream writers on one generation path. Same reason the update policy is a **rolling
+   update with `minInstancesInService: 0`** (terminate-before-launch): never switch it (back)
+   to `replacingUpdate()`, which runs old and new instances side by side.
 6. **Wire shapes mirror the RDS Data API** (`SqlParameter[]`, `records`/`columnMetadata`/
    `numberOfRecordsUpdated`, `Field` union incl. base64 `blobValue`; INTEGER beyond ±2^53 →
    `stringValue`) so the connector's `convertParams`/`extractFieldValue` round-trip unchanged.
@@ -33,6 +35,11 @@ runbook; this file is the working-agreement layer for agents.
 9. **`longValue`/`booleanValue` params bind as `bigint`, not `number`.** node:sqlite binds a JS
    number with `sqlite3_bind_double` even when integral; ordinary column affinity hides it, but
    vec0 rejects a REAL rowid. Don't "simplify" the BigInt conversion in marshalling.
+10. **A deploy rolls the service via the artifact hash in user-data.** The hash line in
+    `buildUserData` is an inert comment but load-bearing: it versions the launch template on
+    every new `service.tar.gz`, so the rolling update replaces the instance at deploy time
+    (~1 min gap, same sequence as the tested kill-instance recovery). The SSM artifact pointer
+    remains the emergency service-only path (manual re-fetch + restart, no CDK).
 
 ## Working on it
 

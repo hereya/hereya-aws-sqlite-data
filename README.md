@@ -84,9 +84,13 @@ node scripts/acceptance/noisy-neighbor.mjs <stackName>            # flood one ap
 
 ## Ops runbook
 
-- **Service-only update (no CDK)**: build `service.tar.gz`, upload to any readable S3 spot,
-  update the `/<stack>/service-artifact` SSM parameter, then either restart the service via
-  SSM (`systemctl restart dilaya-data-api` after re-running the fetch steps) or terminate the
+- **Normal service update**: a CDK deploy with a new `service.tar.gz` **replaces the instance
+  automatically** (the artifact hash in user-data versions the launch template; the ASG rolling
+  update terminates the old instance, then launches the new one — ~1 min write gap, restore from
+  local files). No manual bounce needed since 0.1.8.
+- **Service-only update (no CDK, emergency path)**: build `service.tar.gz`, upload to any readable
+  S3 spot, update the `/<stack>/service-artifact` SSM parameter, then either restart the service
+  via SSM (`systemctl restart dilaya-data-api` after re-running the fetch steps) or terminate the
   instance and let the ASG rebuild from the parameter.
 - **Remove an app**: flip its registry row `status` (or delete the row) → the poller (or
   `/admin/sync`) closes it and deletes the LOCAL file. The **S3 replica is retained** as the
