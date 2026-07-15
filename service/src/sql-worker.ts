@@ -13,6 +13,7 @@ import {
   type SqliteBindable,
   type StatementResult,
 } from "./marshalling.ts";
+import { loadVec, resolveVec0Path } from "./vec.ts";
 
 interface ExecMessage {
   id: number;
@@ -49,8 +50,16 @@ if (typeof process.send !== "function") throw new Error("sql-worker must run as 
 let autoConn: DatabaseSync | null = null;
 let txConn: DatabaseSync | null = null;
 
+// Resolved once at startup: a missing extension kills the worker immediately
+// (no silent no-vec mode) — and boot already asserted it loads (vec.ts).
+const vec0Path = resolveVec0Path();
+
 function openConn(): DatabaseSync {
-  const db = new DatabaseSync(dbPath!);
+  // allowExtension only enables the host-side loadExtension() API; loadVec
+  // re-disables extension loading right after vec0 registers, so tenant SQL
+  // never sees load_extension().
+  const db = new DatabaseSync(dbPath!, { allowExtension: true });
+  loadVec(db, vec0Path);
   db.exec("PRAGMA journal_mode=WAL");
   db.exec("PRAGMA busy_timeout=5000");
   db.exec("PRAGMA foreign_keys=ON");

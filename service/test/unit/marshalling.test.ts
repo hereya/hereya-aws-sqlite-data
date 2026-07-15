@@ -21,10 +21,12 @@ test("bindParams converts every Field shape", () => {
   ];
   const binds = bindParams(params);
   assert.equal(binds.s, "hello");
-  assert.equal(binds.i, 42);
+  // integers bind as bigint → sqlite3_bind_int64 (a JS number would bind as
+  // REAL, which virtual tables like vec0 reject for rowids)
+  assert.equal(binds.i, 42n);
   assert.equal(binds.d, 1.5);
-  assert.equal(binds.bt, 1);
-  assert.equal(binds.bf, 0);
+  assert.equal(binds.bt, 1n);
+  assert.equal(binds.bf, 0n);
   assert.equal(binds.n, null);
   assert.deepEqual(Buffer.from(binds.b as Uint8Array).toString(), "abc");
 });

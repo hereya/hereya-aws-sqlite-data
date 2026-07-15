@@ -13,6 +13,7 @@ import { buildServer } from "./server.ts";
 import { Shutdown } from "./shutdown.ts";
 import { AppSync } from "./sync.ts";
 import { TxRegistry } from "./tx.ts";
+import { assertVecLoadable } from "./vec.ts";
 import { resolveWorkerPath, WorkerPool } from "./worker-host.ts";
 
 export interface RunningService {
@@ -29,6 +30,10 @@ export function createRegistry(cfg: Config): Registry {
 }
 
 export async function bootService(cfg: Config, opts: { installSignalHandlers?: boolean } = {}): Promise<RunningService> {
+  // 0. fail-fast: every sql-worker preloads vec0 on connection open, so prove
+  // the extension loads on this runtime before restoring/serving anything.
+  const vecVersion = assertVecLoadable();
+
   const registry = createRegistry(cfg);
   const litestream = new Litestream(cfg);
   const txRegistry = new TxRegistry({ idleMs: cfg.txIdleMs, maxMs: cfg.txMaxMs });
@@ -56,7 +61,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
     onAdminSync: () => sync.syncOnce(),
     onDeleteApp: (orgId, appId) => sync.removeApp(orgId, appId),
-    health: () => ({ litestream: litestream.healthy ? "up" : "down" }),
+    health: () => ({ litestream: litestream.healthy ? "up" : "down", vec: vecVersion }),
     isDraining: () => shutdownRef?.isDraining ?? false,
   });
   await new Promise<void>((resolve) => server.listen(cfg.port, resolve));

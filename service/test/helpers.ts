@@ -13,6 +13,7 @@ import { resolveWorkerPath, WorkerPool } from "../src/worker-host.ts";
 export interface TestService {
   baseUrl: string;
   registryFile: string;
+  dbDir: string;
   setRegistry: (entries: Array<{ org_id: string; app_id: string; status: string }>) => void;
   close: () => Promise<void>;
 }
@@ -85,6 +86,7 @@ export async function startTestService(overrides: Partial<Config> = {}): Promise
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     registryFile,
+    dbDir: cfg.dbDir,
     setRegistry: (entries) => {
       writeFileSync(registryFile, JSON.stringify(entries));
     },

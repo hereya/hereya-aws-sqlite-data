@@ -42,7 +42,13 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 | `POST /admin/sync` | `{}` | reconcile served apps against the registry now |
 | `POST /admin/delete-app` | `{org_id, app_id}` | tears down the app's local db (close executor, drop from litestream, delete local file); **S3 replica retained**; used by the connector's `drop-schema` |
 | `GET /stats?org_id&app_id` | – | `{dbSizeBytes}` (db + WAL on disk); used by the connector's `get-usage-report` |
-| `GET /health` | – | status, apps, litestream up/down |
+| `GET /health` | – | status, apps, litestream up/down, vec (sqlite-vec version) |
+
+**Vector search (sqlite-vec).** The pinned `vec0` loadable extension is preloaded at the driver
+level on every app connection: tenant SQL can `CREATE VIRTUAL TABLE t USING vec0(embedding
+float[N])` and run KNN (`WHERE embedding MATCH :q ORDER BY distance LIMIT k`), but
+`load_extension()` itself is never available to tenant SQL (loading is re-disabled right after the
+preload). Boot fail-fasts if the extension doesn't load (`vec_version()` self-check).
 
 ## Package contract
 
@@ -58,9 +64,9 @@ the `iamPolicy*` outputs auto-attach to the consuming app's Lambda role.
 
 ```bash
 npm install
-npm test              # unit + integration + CDK assertions (downloads Node 24 + litestream toolchain)
+npm test              # unit + integration + CDK assertions (downloads Node 24 + sqlite-vec toolchain)
 npm run typecheck
-npm run build-service # dist/service.tar.gz (hermetic: pinned sha256 Node + litestream)
+npm run build-service # dist/service.tar.gz (hermetic: pinned sha256 Node + litestream + sqlite-vec)
 ```
 
 Local service without AWS: `REGISTRY_MODE=file REGISTRY_FILE=... LITESTREAM_DISABLED=1 DB_DIR=... node --experimental-strip-types service/src/main.ts` (or use the toolchain node).
