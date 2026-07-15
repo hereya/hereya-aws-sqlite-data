@@ -26,6 +26,13 @@ runbook; this file is the working-agreement layer for agents.
    `stringValue`) so the connector's `convertParams`/`extractFieldValue` round-trip unchanged.
 7. **SQL guards are duplicated by design**: ATTACH/DETACH, `VACUUM INTO`, PRAGMA outside the
    read-only allowlist are rejected HERE even though the connector also rejects them.
+8. **sqlite-vec (vec0) is preloaded per-connection, never tenant-loadable.** `openConn` opens
+   with `allowExtension: true`, loads the pinned `vec0`, then `enableLoadExtension(false)` —
+   tenant SQL gets the `vec_*` functions and vec0 virtual tables but never `load_extension()`.
+   Boot asserts `vec_version()` (fail-fast) before restoring/serving anything.
+9. **`longValue`/`booleanValue` params bind as `bigint`, not `number`.** node:sqlite binds a JS
+   number with `sqlite3_bind_double` even when integral; ordinary column affinity hides it, but
+   vec0 rejects a REAL rowid. Don't "simplify" the BigInt conversion in marshalling.
 
 ## Working on it
 
@@ -35,9 +42,10 @@ runbook; this file is the working-agreement layer for agents.
 - Registry schema (shared with the connector): PK `org_id`, SK `sk` ∈ {`org`, `app#<appId>`,
   `name#<name>`}; the VM reads only `app#` rows (+`status`). `status` is a DDB reserved word
   — always alias it (`#s`) in expressions.
-- The service artifact is hermetic: `scripts/build-service.mjs` pins Node + litestream by
-  sha256 (`scripts/pins.json`). Bump versions via `scripts/{node,litestream}-version.txt`
-  and REVIEW the new pins before committing.
+- The service artifact is hermetic: `scripts/build-service.mjs` pins Node + litestream +
+  sqlite-vec by sha256 (`scripts/pins.json`). Bump versions via
+  `scripts/{node,litestream,sqlite-vec}-version.txt` and REVIEW the new pins before committing
+  (GitHub's release API exposes per-asset sha256 digests to cross-check).
 - cdk.json runs the app through `npx tsx` (package is ESM; ts-node would choke).
   The repo-local `aws-cdk` devDependency matters: the CLI must be ≥ the lib's cloud-assembly
   schema (a too-old global cdk silently no-ops with a schema-mismatch notice).

@@ -1,4 +1,5 @@
 {
   "node:v24.17.0:linux-arm64": "67324b9e515e7d13da72571a5dd522bb23145a820f7dde15497897e466759ab3",
-  "litestream:v0.5.14:linux-arm64": "b49b3d01fb0a8b4d426ee613c080fba44acae0551587dc43525dcd93eee64b4f"
+  "litestream:v0.5.14:linux-arm64": "b49b3d01fb0a8b4d426ee613c080fba44acae0551587dc43525dcd93eee64b4f",
+  "sqlite-vec:v0.1.9:linux-arm64": "ea03d39541e478fab5974253c461e1cb5d77742f69e40cf96e3fad5bc309a37c"
 }

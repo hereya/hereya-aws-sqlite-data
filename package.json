@@ -7,8 +7,9 @@
   "scripts": {
     "ensure-node": "node scripts/ensure-node.mjs",
     "ensure-litestream": "node scripts/ensure-litestream.mjs",
-    "test": "npm run ensure-node --silent && .toolchain/node/bin/node --test 'service/test/**/*.test.ts' 'test/*.test.ts'",
-    "test:unit": "npm run ensure-node --silent && .toolchain/node/bin/node --test 'service/test/unit/*.test.ts'",
+    "ensure-vec": "node scripts/ensure-vec.mjs",
+    "test": "npm run ensure-node --silent && npm run ensure-vec --silent && .toolchain/node/bin/node --test 'service/test/**/*.test.ts' 'test/*.test.ts'",
+    "test:unit": "npm run ensure-node --silent && npm run ensure-vec --silent && .toolchain/node/bin/node --test 'service/test/unit/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "build-service": "node scripts/build-service.mjs"
   },

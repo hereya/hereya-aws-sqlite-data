@@ -20,6 +20,7 @@ const cacheDir = join(root, ".toolchain", "artifact-cache");
 
 const NODE_VERSION = readFileSync(join(root, "scripts", "node-version.txt"), "utf8").trim();
 const LITESTREAM_VERSION = readFileSync(join(root, "scripts", "litestream-version.txt"), "utf8").trim();
+const SQLITE_VEC_VERSION = readFileSync(join(root, "scripts", "sqlite-vec-version.txt"), "utf8").trim();
 const pinsPath = join(root, "scripts", "pins.json");
 const pins = existsSync(pinsPath) ? JSON.parse(readFileSync(pinsPath, "utf8")) : {};
 
@@ -31,6 +32,10 @@ const LITESTREAM_ASSET_VERSION = /^v0\.[5-9]|^v[1-9]/.test(LITESTREAM_VERSION)
   : LITESTREAM_VERSION;
 const LITESTREAM_ASSET = `litestream-${LITESTREAM_ASSET_VERSION}-linux-arm64.tar.gz`;
 const LITESTREAM_URL = `https://github.com/benbjohnson/litestream/releases/download/${LITESTREAM_VERSION}/${LITESTREAM_ASSET}`;
+// sqlite-vec loadable extension (vec0.so), preloaded by sql-worker on every
+// connection. Asset names use the bare version and "aarch64".
+const SQLITE_VEC_ASSET = `sqlite-vec-${SQLITE_VEC_VERSION.replace(/^v/, "")}-loadable-linux-aarch64.tar.gz`;
+const SQLITE_VEC_URL = `https://github.com/asg017/sqlite-vec/releases/download/${SQLITE_VEC_VERSION}/${SQLITE_VEC_ASSET}`;
 
 function sha256(buf) {
   return createHash("sha256").update(buf).digest("hex");
@@ -97,9 +102,24 @@ async function main() {
   execFileSync("cp", [join(lsExtract, "litestream"), join(stageDir, "bin", "litestream")]);
   rmSync(lsExtract, { recursive: true, force: true });
 
+  // vec0.so sits at the stage root, next to sql-worker.js (resolveVec0Path
+  // looks beside the module) — the whole stage dir unpacks to /opt/dilaya/service.
+  const vecTar = await fetchCached(SQLITE_VEC_URL, SQLITE_VEC_ASSET, `sqlite-vec:${SQLITE_VEC_VERSION}:linux-arm64`);
+  const vecExtract = join(distDir, "vec-extract");
+  rmSync(vecExtract, { recursive: true, force: true });
+  mkdirSync(vecExtract, { recursive: true });
+  writeFileSync(join(vecExtract, SQLITE_VEC_ASSET), vecTar);
+  execFileSync("tar", ["-xzf", join(vecExtract, SQLITE_VEC_ASSET), "-C", vecExtract]);
+  execFileSync("cp", [join(vecExtract, "vec0.so"), join(stageDir, "vec0.so")]);
+  rmSync(vecExtract, { recursive: true, force: true });
+
   writeFileSync(
     join(stageDir, "version.json"),
-    JSON.stringify({ node: NODE_VERSION, litestream: LITESTREAM_VERSION, builtAt: new Date().toISOString() }, null, 2),
+    JSON.stringify(
+      { node: NODE_VERSION, litestream: LITESTREAM_VERSION, sqliteVec: SQLITE_VEC_VERSION, builtAt: new Date().toISOString() },
+      null,
+      2,
+    ),
   );
 
   // 3. tar it up (tar is always present on AL2023; unzip is not)

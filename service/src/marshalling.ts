@@ -52,10 +52,13 @@ function fieldToBindable(name: string, value: FieldValue): SqliteBindable {
     if (!Number.isInteger(value.longValue)) {
       throw new ServiceError("BAD_REQUEST", `param ${name}: longValue must be an integer`);
     }
-    return value.longValue;
+    // node:sqlite binds a JS number with sqlite3_bind_double even when it is
+    // integral; column affinity hides that on ordinary tables, but virtual
+    // tables (vec0 rowid) see a REAL and reject it. bigint binds as INTEGER.
+    return BigInt(value.longValue);
   }
   if ("doubleValue" in value) return value.doubleValue;
-  if ("booleanValue" in value) return value.booleanValue ? 1 : 0;
+  if ("booleanValue" in value) return value.booleanValue ? 1n : 0n;
   if ("blobValue" in value) return new Uint8Array(Buffer.from(value.blobValue, "base64"));
   throw new ServiceError("BAD_REQUEST", `param ${name}: unrecognized value shape`);
 }
