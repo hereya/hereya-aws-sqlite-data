@@ -9,6 +9,7 @@ import { appKeyOf } from "./apps.ts";
 import type { Registry } from "./registry.ts";
 import type { TxRegistry } from "./tx.ts";
 import type { Limiter } from "./limits.ts";
+import type { DbQuotaGuard } from "./quota.ts";
 import {
   assertSafeSql,
   isMultiStatement,
@@ -23,6 +24,8 @@ export interface ServerDeps {
   manager: AppManager;
   txRegistry: TxRegistry;
   limiter: Limiter;
+  /** Org database cap. Absent = no cap is enforced (local dev, bare tests). */
+  quota?: DbQuotaGuard;
   /** Restore-before-first-query hook (hot-add); absent in bare-core tests. */
   ensureServed?: (orgId: string, appId: string) => Promise<void>;
   onAdminSync?: () => Promise<{ added: number; removed: number }>;
@@ -139,6 +142,9 @@ export function buildServer(deps: ServerDeps): Server {
     const q = validateQuery(body, cfg.maxSqlBytes);
     assertSafeSql(q.sql);
     await authorize(q.orgId, q.appId);
+    // AFTER authorize: an unknown pair is a 403, not a quota answer that would
+    // leak whether the org exists.
+    await deps.quota?.assertWriteAllowed(q.orgId, q.sql);
     const appKey = appKeyOf(q.orgId, q.appId);
     limiter.acquire(appKey);
     try {
@@ -174,6 +180,7 @@ export function buildServer(deps: ServerDeps): Server {
       throw new ServiceError("BAD_REQUEST", "batch-execute requires a single statement");
     }
     await authorize(q.orgId, q.appId);
+    await deps.quota?.assertWriteAllowed(q.orgId, q.sql);
     const appKey = appKeyOf(q.orgId, q.appId);
     limiter.acquire(appKey);
     try {

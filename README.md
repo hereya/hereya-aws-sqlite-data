@@ -44,6 +44,16 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 | `GET /stats?org_id&app_id` | – | `{dbSizeBytes}` (db + WAL on disk); used by the connector's `get-usage-report` |
 | `GET /health` | – | status, apps, litestream up/down, vec (sqlite-vec version) |
 
+**Org database quota.** `/query` and `/batch-execute` refuse a write with `DB_QUOTA_EXCEEDED`
+(429) once the org's databases reach `maxDbMb`, read off the registry's `sk='org'` row (dilaya.eu
+decides the number, the connector caches it there). This is where the cap has to live: a per-app
+Lambda calls this API directly with its own capability token, so the connector never sees those
+statements. Doctrine — no cap set / unreadable = **no limit** (fail open); nothing is ever
+deleted; reads and space-freeing statements (`DELETE`/`DROP`/`VACUUM`) always pass; usage is the
+measured size of the org's db files (main file only — `VACUUM` writes through the WAL, so
+counting the WAL would make freeing space look like growth), cached 5–120 s depending on how
+close the org is to its cap.
+
 **Vector search (sqlite-vec).** The pinned `vec0` loadable extension is preloaded at the driver
 level on every app connection: tenant SQL can `CREATE VIRTUAL TABLE t USING vec0(embedding
 float[N])` and run KNN (`WHERE embedding MATCH :q ORDER BY distance LIMIT k`), but
@@ -78,6 +88,7 @@ node scripts/acceptance/canary.mjs <dataApiUrl> <registryTable>   # signed round
 node scripts/acceptance/kill-instance.mjs <stackName>             # terminate → auto-recovery with data intact
 node scripts/acceptance/kill-process.mjs <stackName>              # SIGKILL → systemd restart, no ASG event
 node scripts/acceptance/cut-network.mjs <stackName>               # SG swap → dead-man ALARM → restore → OK
+node scripts/acceptance/quota.mjs <dataApiUrl> <registryTable>    # db cap: refused past it, reads/DELETE/VACUUM still pass, lifting it unblocks
 node scripts/acceptance/noisy-neighbor.mjs <stackName>            # flood one app → other app unaffected
 .toolchain/node/bin/node scripts/acceptance/restore-legacy-0-3.mjs <stackName>  # 0.3-format replica restored by the 0.5 service
 ```

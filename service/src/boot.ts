@@ -8,6 +8,7 @@ import { CloudMapRegistration } from "./cloudmap.ts";
 import { Heartbeat } from "./heartbeat.ts";
 import { Limiter } from "./limits.ts";
 import { Litestream } from "./litestream.ts";
+import { DbQuotaGuard, DdbOrgQuotaReader, StaticOrgQuotaReader, type OrgQuotaReader } from "./quota.ts";
 import { DdbRegistry, FileRegistry, type Registry } from "./registry.ts";
 import { buildServer } from "./server.ts";
 import { Shutdown } from "./shutdown.ts";
@@ -29,6 +30,19 @@ export function createRegistry(cfg: Config): Registry {
   return new DdbRegistry({ tableName: cfg.registryTable, region: cfg.awsRegion, cacheMs: cfg.registryCacheMs });
 }
 
+/**
+ * Where org caps come from. In file (local-dev) mode there is no org row to
+ * read and nothing to bill, so nothing is capped.
+ */
+export function createOrgQuotaReader(cfg: Config): OrgQuotaReader {
+  if (cfg.registryMode === "file") return new StaticOrgQuotaReader();
+  return new DdbOrgQuotaReader({
+    tableName: cfg.registryTable,
+    region: cfg.awsRegion,
+    cacheMs: cfg.orgQuotaCacheMs,
+  });
+}
+
 export async function bootService(cfg: Config, opts: { installSignalHandlers?: boolean } = {}): Promise<RunningService> {
   // 0. fail-fast: every sql-worker preloads vec0 on connection open, so prove
   // the extension loads on this runtime before restoring/serving anything.
@@ -46,6 +60,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   const manager = new AppManager(cfg, pool);
   const limiter = new Limiter({ maxPerApp: cfg.maxInflightPerApp, maxTotal: cfg.maxInflightTotal });
   const sync = new AppSync(registry, manager, litestream);
+  const quota = new DbQuotaGuard({ dbDir: cfg.dbDir, reader: createOrgQuotaReader(cfg) });
 
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
   const servedAtBoot = await sync.bootRestoreAll();
@@ -58,6 +73,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     manager,
     txRegistry,
     limiter,
+    quota,
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
     onAdminSync: () => sync.syncOnce(),
     onDeleteApp: (orgId, appId) => sync.removeApp(orgId, appId),
