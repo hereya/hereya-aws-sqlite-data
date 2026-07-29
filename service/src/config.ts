@@ -19,6 +19,10 @@ export interface Config {
   maxSqlBytes: number;
   registryCacheMs: number;
   registryPollSeconds: number;
+  /** How long an org's `maxDbMb` stays trusted before it is re-read (quota.ts).
+   *  Raising a cap for a blocked customer must take effect in seconds, not
+   *  minutes — hence a short TTL on a cheap single-item read. */
+  orgQuotaCacheMs: number;
   litestreamDisabled: boolean;
   litestreamBin: string;
   litestreamConfigPath: string;
@@ -75,6 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxSqlBytes: intEnv("MAX_SQL_BYTES", 262_144),
     registryCacheMs: intEnv("REGISTRY_CACHE_MS", 30_000),
     registryPollSeconds: intEnv("REGISTRY_POLL_SECONDS", 30),
+    orgQuotaCacheMs: intEnv("ORG_QUOTA_CACHE_MS", 30_000),
     litestreamDisabled: env.LITESTREAM_DISABLED === "1" || env.LITESTREAM_DISABLED === "true",
     litestreamBin: env.LITESTREAM_BIN ?? "litestream",
     litestreamConfigPath: env.LITESTREAM_CONFIG_PATH ?? "/etc/dilaya/litestream.yml",

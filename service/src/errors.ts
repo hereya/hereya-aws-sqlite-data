@@ -4,6 +4,7 @@ export type ErrorCode =
   | "CROSS_ORG_DENIED"
   | "CAPABILITY_DENIED"
   | "THROTTLED"
+  | "DB_QUOTA_EXCEEDED"
   | "QUERY_TIMEOUT"
   | "RESULT_TOO_LARGE"
   | "SQL_ERROR"
@@ -18,6 +19,10 @@ const STATUS: Record<ErrorCode, number> = {
   CROSS_ORG_DENIED: 403,
   CAPABILITY_DENIED: 403,
   THROTTLED: 429,
+  // Same 429 as THROTTLED, and for the same reason: a limit the caller can
+  // come back from. The distinct code says which limit — retrying later helps
+  // with one, freeing space is the only way past the other.
+  DB_QUOTA_EXCEEDED: 429,
   QUERY_TIMEOUT: 408,
   RESULT_TOO_LARGE: 413,
   SQL_ERROR: 400,

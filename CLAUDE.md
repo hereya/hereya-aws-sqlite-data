@@ -35,7 +35,14 @@ runbook; this file is the working-agreement layer for agents.
 9. **`longValue`/`booleanValue` params bind as `bigint`, not `number`.** node:sqlite binds a JS
    number with `sqlite3_bind_double` even when integral; ordinary column affinity hides it, but
    vec0 rejects a REAL rowid. Don't "simplify" the BigInt conversion in marshalling.
-10. **A deploy rolls the service via the artifact hash in user-data.** The hash line in
+10. **The db quota FAILS OPEN — the one check here that does.** Everything else on this VM is
+    fail-closed because it answers "may this caller touch this app". `maxDbMb` answers "has this
+    customer bought enough space": an unreadable cap, an absent attribute or `null` = NO cap.
+    Refusing an org's own writes because DynamoDB blinked is a worse failure than one unenforced
+    cap. Reads and space-freeing statements (`DELETE`/`DROP`/`VACUUM`) always pass, and the quota
+    measures the **main db file only, never the WAL** — `VACUUM` rewrites the database through
+    the WAL, so counting it would make freeing space look like growth. See `service/src/quota.ts`.
+11. **A deploy rolls the service via the artifact hash in user-data.** The hash line in
     `buildUserData` is an inert comment but load-bearing: it versions the launch template on
     every new `service.tar.gz`, so the rolling update replaces the instance at deploy time
     (~1 min gap, same sequence as the tested kill-instance recovery). The SSM artifact pointer
@@ -74,7 +81,13 @@ runbook; this file is the working-agreement layer for agents.
 ## Connector-track interfaces (implemented)
 
 - `GET /stats?org_id&app_id → {dbSizeBytes}` — capability-gated usage endpoint; the connector's
-  `get-usage-report` calls it.
+  `get-usage-report` calls it. Counts db + WAL (reporting); the quota counts the db file only
+  (invariant 10) — the two numbers differ on purpose.
+- **Org db quota** — reads `maxDbMb` off the registry's `sk='org'` row (written by the connector
+  when it refreshes org-info from dilaya.eu; no new IAM, same table as the app rows) and refuses
+  `/query` + `/batch-execute` writes past it with `DB_QUOTA_EXCEEDED` (429). This closes the last
+  hole in the caps: a per-app Lambda writes here DIRECTLY with its own capability token, so the
+  connector's own enforcement never sees those statements.
 - `POST /admin/delete-app {org_id, app_id}` — drop-schema teardown: close executor, drop from
   litestream config, delete the local file, **KEEP the S3 replica**. Capability-gated but skips
   the active-status check (the connector flips the registry row to `deleting` first); the

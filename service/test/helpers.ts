@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import type { Config } from "../src/config.ts";
 import { AppManager } from "../src/apps.ts";
 import { Limiter } from "../src/limits.ts";
+import { DbQuotaGuard, StaticOrgQuotaReader } from "../src/quota.ts";
 import { FileRegistry } from "../src/registry.ts";
 import { buildServer } from "../src/server.ts";
 import { TxRegistry } from "../src/tx.ts";
@@ -25,7 +26,19 @@ export const DEFAULT_REGISTRY = [
   { org_id: "org-a", app_id: "app-old", status: "inactive" },
 ];
 
-export async function startTestService(overrides: Partial<Config> = {}): Promise<TestService> {
+export interface TestServiceOptions {
+  /** Per-org `maxDbMb`. Omitted entirely = no quota guard at all (the default,
+   *  so every existing test keeps running against an uncapped service). */
+  quotaCaps?: Record<string, number | null>;
+  /** Clock for the usage-measurement cache, so a test can jump past its TTL
+   *  instead of sleeping through it. */
+  quotaNow?: () => number;
+}
+
+export async function startTestService(
+  overrides: Partial<Config> = {},
+  opts: TestServiceOptions = {},
+): Promise<TestService> {
   const dir = mkdtempSync(join(tmpdir(), "sqlite-data-test-"));
   const registryFile = join(dir, "registry.json");
   writeFileSync(registryFile, JSON.stringify(DEFAULT_REGISTRY));
@@ -49,6 +62,7 @@ export async function startTestService(overrides: Partial<Config> = {}): Promise
     maxSqlBytes: 262_144,
     registryCacheMs: 100,
     registryPollSeconds: 30,
+    orgQuotaCacheMs: 0,
     litestreamDisabled: true,
     litestreamBin: "litestream",
     litestreamConfigPath: join(dir, "litestream.yml"),
@@ -77,7 +91,15 @@ export async function startTestService(overrides: Partial<Config> = {}): Promise
   });
   const manager = new AppManager(cfg, pool);
   const limiter = new Limiter({ maxPerApp: cfg.maxInflightPerApp, maxTotal: cfg.maxInflightTotal });
-  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter });
+  const quota =
+    opts.quotaCaps === undefined
+      ? undefined
+      : new DbQuotaGuard({
+          dbDir: cfg.dbDir,
+          reader: new StaticOrgQuotaReader(opts.quotaCaps),
+          now: opts.quotaNow,
+        });
+  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter, quota });
 
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
