@@ -42,11 +42,24 @@ runbook; this file is the working-agreement layer for agents.
     cap. Reads and space-freeing statements (`DELETE`/`DROP`/`VACUUM`) always pass, and the quota
     measures the **main db file only, never the WAL** — `VACUUM` rewrites the database through
     the WAL, so counting it would make freeing space look like growth. See `service/src/quota.ts`.
-11. **A deploy rolls the service via the artifact hash in user-data.** The hash line in
-    `buildUserData` is an inert comment but load-bearing: it versions the launch template on
-    every new `service.tar.gz`, so the rolling update replaces the instance at deploy time
-    (~1 min gap, same sequence as the tested kill-instance recovery). The SSM artifact pointer
+11. **A NEW SERVICE rolls the instance — a new BUILD must not.** The hash line in
+    `buildUserData` is an inert comment but load-bearing: it versions the launch template, so
+    a changed hash makes the rolling update replace the instance (~1 min gap with no Data API,
+    same sequence as the tested kill-instance recovery). That is why the hash comes from
+    `serviceContentHash()` (`lib/service-hash.ts`) — the service SOURCES plus the pinned
+    node/litestream/sqlite-vec versions and the build script — and **not** from the built
+    tarball. It used to be `AssetHashType.OUTPUT`, i.e. a hash of `service.tar.gz`, which is not
+    reproducible (`version.json.builtAt` + tar/gzip mtimes): two builds of identical source gave
+    two hashes, so **every deploy of anything rolled the production databases** — five times in
+    forty hours on 2026-07-29/30, none of them a change to this service, ~60 s of unreachable
+    Data API each (visitors of customer sites logged out, and the login page down with it).
+    Keep the hash on the inputs; `test/service-hash.test.ts` pins it. The SSM artifact pointer
     remains the emergency service-only path (manual re-fetch + restart, no CDK).
+    ⚠️ The other silent roll trigger is `machineImage: MachineImage.latestAmazonLinux2023()`:
+    when AWS publishes a new AL2023 AMI, the next deploy — of anything — replaces the instance
+    too. Left as-is deliberately (it carries security patches), but it means a database
+    interruption can still ride in on an unrelated deploy; pin the AMI if that becomes
+    unacceptable.
 
 ## Working on it
 
