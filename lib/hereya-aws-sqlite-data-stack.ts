@@ -22,6 +22,7 @@ import { cpSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildUserData } from "./user-data.ts";
+import { serviceContentHash } from "./service-hash.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -212,7 +213,14 @@ exports.handler = async (event) => {
     // --- Service artifact ----------------------------------------------------
     const artifact = new s3assets.Asset(this, "ServiceArtifact", {
       path: join(repoRoot, "service"),
-      assetHashType: cdk.AssetHashType.OUTPUT,
+      // Hash the service's INPUTS, never the built tarball. The hash rides in
+      // the launch template, so it decides when CloudFormation replaces the
+      // database VM — and `AssetHashType.OUTPUT` made that decision on a
+      // tarball that is not reproducible (builtAt timestamp + tar/gzip mtimes),
+      // so every deploy of anything rolled the databases for ~1 min. See
+      // lib/service-hash.ts for the measurement.
+      assetHash: serviceContentHash(repoRoot),
+      assetHashType: cdk.AssetHashType.CUSTOM,
       bundling: {
         image: cdk.DockerImage.fromRegistry("public.ecr.aws/docker/library/node:24"),
         local: {
