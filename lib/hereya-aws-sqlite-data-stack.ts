@@ -26,6 +26,16 @@ import { serviceContentHash } from "./service-hash.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+// The instance AMI is PINNED (see CLAUDE.md invariant 11). Moving it replaces
+// the production database VM, so it moves only when a human bumps these two
+// constants — never because AWS published something.
+// AL2023, kernel 6.1, arm64, eu-west-1; published 2026-07-27, in service since
+// 2026-07-30. To roll the OS: read the new id from the SSM parameter
+// /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64, bump here,
+// publish the package, and roll it out through a connector release.
+const PINNED_AMI_REGION = "eu-west-1";
+const PINNED_AMI_ID = "ami-0ab117b5527d5fe24";
+
 // Hereya package inputs arrive as plain env vars (camelCase).
 function input(name: string, fallback: string): string {
   const v = process.env[name];
@@ -366,9 +376,7 @@ exports.handler = async (event) => {
     );
 
     const launchTemplate = new ec2.LaunchTemplate(this, "LaunchTemplate", {
-      machineImage: ec2.MachineImage.latestAmazonLinux2023({
-        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
-      }),
+      machineImage: this.resolveMachineImage(input("amiId", PINNED_AMI_ID).trim()),
       instanceType: new ec2.InstanceType(instanceType),
       role,
       securityGroup: instanceSg,
@@ -408,8 +416,9 @@ exports.handler = async (event) => {
       // same sequence as the tested kill-instance recovery (~1 min gap), and the
       // only order compatible with the litestream single-writer invariant. Do
       // NOT switch back to replacingUpdate(): it runs old and new side by side.
-      // Combined with the artifact hash in user-data, every new service build
-      // rolls the instance at deploy time (no manual bounce).
+      // What rolls the instance is therefore, by design, exactly two deliberate
+      // changes: a new SERVICE (the source hash in user-data) and a bumped AMI
+      // pin. Ordinary deploys leave the databases alone.
       updatePolicy: autoscaling.UpdatePolicy.rollingUpdate({
         maxBatchSize: 1,
         minInstancesInService: 0,
@@ -551,5 +560,57 @@ exports.handler = async (event) => {
         ],
       }),
     });
+  }
+
+  /**
+   * The VM's AMI — pinned by default, on purpose.
+   *
+   * `MachineImage.latestAmazonLinux2023()` re-resolves "the newest AL2023" at
+   * EVERY deploy. AWS publishes one roughly monthly, so the next deploy after a
+   * publication — of ANYTHING, including an unrelated connector release — hands
+   * the launch template a different ImageId, and the rolling update
+   * (`minInstancesInService: 0`) terminates the production database VM to apply
+   * it: ~60 s with no Data API for every org, at a moment nobody chose. Same
+   * shape as the artifact-hash incident of 2026-07-29/30 (CLAUDE.md inv. 11).
+   *
+   * So the id is a constant. It moves when someone bumps `PINNED_AMI_ID` or
+   * passes `amiId`, i.e. on a dated, announced deploy. The accepted trade-off:
+   * OS security patches no longer ride in by accident — they arrive when we
+   * roll the pin, which the daily scan surfaces. `amiId=latest` restores the
+   * old auto-resolving behaviour (surprise roll included).
+   */
+  private resolveMachineImage(amiId: string): ec2.IMachineImage {
+    if (amiId === "latest") {
+      return ec2.MachineImage.latestAmazonLinux2023({
+        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
+      });
+    }
+    if (!/^ami-[0-9a-f]{8,17}$/.test(amiId)) {
+      throw new Error(
+        `amiId must be an AMI id ("ami-…") or the literal "latest"; got ${JSON.stringify(amiId)}`,
+      );
+    }
+    // An AMI id is region-scoped: the pinned default only exists in eu-west-1.
+    // Fail here rather than with an ASG that cannot launch anything.
+    if (
+      amiId === PINNED_AMI_ID &&
+      !cdk.Token.isUnresolved(this.region) &&
+      this.region !== PINNED_AMI_REGION
+    ) {
+      throw new Error(
+        `The default amiId (${PINNED_AMI_ID}) is an AL2023 arm64 image of ${PINNED_AMI_REGION} and does not exist in ${this.region}. ` +
+          `Pass amiId=<an arm64 AL2023 AMI of ${this.region}>, or amiId=latest to resolve it at deploy time.`,
+      );
+    }
+    // Deliberately not MachineImage.genericLinux(): that needs a region map and
+    // a resolved region. The launch template supplies its own user data, so the
+    // one here is a placeholder (LaunchTemplate: props.userData ?? image's).
+    return {
+      getImage: () => ({
+        imageId: amiId,
+        osType: ec2.OperatingSystemType.LINUX,
+        userData: ec2.UserData.forLinux(),
+      }),
+    };
   }
 }
