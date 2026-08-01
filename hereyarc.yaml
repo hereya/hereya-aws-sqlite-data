@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.10
+version: 0.1.11
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -9,3 +9,6 @@ parameters:
     description: "When 'true', the Data API REQUIRES a valid x-dilaya-capability token on every data route (missing or invalid -> 403 CAPABILITY_DENIED). 'false' (default) = warn mode: the token is validated when present but a request without one is allowed (logging cap_missing). Flip to 'true' once every caller (connector + per-app Lambdas) mints tokens."
     mandatory: false
     default: "false"
+  amiId:
+    description: "AMI of the database VM. Pinned by default to a specific AL2023 arm64 image of eu-west-1, so that an ordinary deploy NEVER replaces the instance (a replacement = ~60s with no Data API for every org). Bump the pin — in lib/hereya-aws-sqlite-data-stack.ts — or pass an id here to move the OS deliberately. 'latest' restores auto-resolution of the newest AL2023 arm64 image at every deploy (and with it the surprise replacement); outside eu-west-1, 'latest' or a region-local id is required."
+    mandatory: false

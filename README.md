@@ -64,7 +64,17 @@ preload). Boot fail-fasts if the extension doesn't load (`vec_version()` self-ch
 
 Inputs (env/`-p`): `instanceType` (t4g.micro), `autoDelete`, `servicePort`, `sqlTimeoutMs`,
 `maxInflightPerApp`, `maxLiveWorkers`, `registryPollSeconds`, `litestreamSyncIntervalMs`,
-`litestreamRetention`, `telegramBotTokenParam` (SSM SecureString *name*), `telegramChatId`.
+`litestreamRetention`, `amiId`, `telegramBotTokenParam` (SSM SecureString *name*), `telegramChatId`.
+
+**`amiId` — the VM image is pinned.** Default = a specific AL2023 arm64 image of eu-west-1
+(`PINNED_AMI_ID` in `lib/hereya-aws-sqlite-data-stack.ts`), *not* "the latest one". Replacing the
+instance costs ~60 s with no Data API for every org, so it must never happen as a side effect:
+with `latestAmazonLinux2023()` the image was re-resolved at every deploy, and the first deploy
+after any AWS publication (~monthly) rolled production. Move the OS deliberately — read the new id
+from SSM `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64`, bump `PINNED_AMI_ID`,
+publish, roll out via a connector release — and announce it. Cost of the pin: OS security patches
+arrive when we roll it, not by accident. `amiId=latest` restores the old auto-resolving behaviour;
+outside eu-west-1 you must pass `latest` or a region-local arm64 AL2023 id (synth fails otherwise).
 
 Outputs: `dataApiUrl`, `awsRegion`, `registryTableName`, `sqliteReplicaBucketName`,
 `iamPolicySqliteDataApi` (execute-api:Invoke), `iamPolicySqliteRegistry` (DDB writes) —

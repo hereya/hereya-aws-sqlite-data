@@ -55,11 +55,18 @@ runbook; this file is the working-agreement layer for agents.
     Data API each (visitors of customer sites logged out, and the login page down with it).
     Keep the hash on the inputs; `test/service-hash.test.ts` pins it. The SSM artifact pointer
     remains the emergency service-only path (manual re-fetch + restart, no CDK).
-    ⚠️ The other silent roll trigger is `machineImage: MachineImage.latestAmazonLinux2023()`:
-    when AWS publishes a new AL2023 AMI, the next deploy — of anything — replaces the instance
-    too. Left as-is deliberately (it carries security patches), but it means a database
-    interruption can still ride in on an unrelated deploy; pin the AMI if that becomes
-    unacceptable.
+12. **The AMI is a constant, not a lookup.** The second silent roll trigger used to be
+    `MachineImage.latestAmazonLinux2023()`: it re-resolves at EVERY deploy, so the first deploy
+    following an AWS publication (~monthly — 2026-06-26, 2026-07-25) replaced the instance, same
+    ~60 s outage as above, on an unrelated release. The image id now lives in `PINNED_AMI_ID` /
+    `PINNED_AMI_REGION` (top of the stack file) and reaches the launch template through
+    `resolveMachineImage()`. Roll the OS deliberately: read
+    `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64`, bump the constant, publish,
+    connector release, announce. Accepted cost: OS patches no longer arrive by accident — the
+    twice-daily scan is what surfaces a new AL2023. `amiId=latest` re-enables auto-resolution
+    (surprise roll included); an id is region-scoped, so the default is refused outside
+    `PINNED_AMI_REGION` rather than producing an ASG that can't launch. With this, the ONLY things
+    that touch the production databases are a new service and a bumped pin — both deliberate.
 
 ## Working on it
 
