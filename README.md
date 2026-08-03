@@ -67,14 +67,28 @@ Inputs (env/`-p`): `instanceType` (t4g.micro), `autoDelete`, `servicePort`, `sql
 `litestreamRetention`, `amiId`, `telegramBotTokenParam` (SSM SecureString *name*), `telegramChatId`.
 
 **`amiId` — the VM image is pinned.** Default = a specific AL2023 arm64 image of eu-west-1
-(`PINNED_AMI_ID` in `lib/hereya-aws-sqlite-data-stack.ts`), *not* "the latest one". Replacing the
+(`PINNED_AMI_ID` in `lib/ami-pin.ts`), *not* "the latest one". Replacing the
 instance costs ~60 s with no Data API for every org, so it must never happen as a side effect:
 with `latestAmazonLinux2023()` the image was re-resolved at every deploy, and the first deploy
-after any AWS publication (~monthly) rolled production. Move the OS deliberately — read the new id
-from SSM `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64`, bump `PINNED_AMI_ID`,
-publish, roll out via a connector release — and announce it. Cost of the pin: OS security patches
-arrive when we roll it, not by accident. `amiId=latest` restores the old auto-resolving behaviour;
-outside eu-west-1 you must pass `latest` or a region-local arm64 AL2023 id (synth fails otherwise).
+after any AWS publication (~monthly) rolled production. Move the OS deliberately — bump
+`PINNED_AMI_ID`, publish, roll out via a connector release — and announce it. Cost of the pin: OS
+security patches arrive when we roll it, not by accident. `amiId=latest` restores the old
+auto-resolving behaviour; outside eu-west-1 you must pass `latest` or a region-local arm64 AL2023
+id (synth fails otherwise).
+
+**`npm run check:ami` — the half that makes the pin safe.** The pin only stays defensible if
+something notices when it falls behind, so the comparison is a command rather than a line in this
+file:
+
+```bash
+npm run check:ami                  # pin vs the published AL2023 — needs no EC2 permission
+npm run check:ami -- --stack <n>   # also check the image the instance is actually running
+```
+
+Exit codes are the interface: **0** in sync · **1** a newer AL2023 exists (or the instance is on
+neither — a bumped pin that was published but never rolled out, which a deploy fixes) · **2** could
+not determine. `2` is deliberately not `0`: a check that reports health while blind is worse than no
+check. Run it before every publish, and on whatever schedule watches this package.
 
 Outputs: `dataApiUrl`, `awsRegion`, `registryTableName`, `sqliteReplicaBucketName`,
 `iamPolicySqliteDataApi` (execute-api:Invoke), `iamPolicySqliteRegistry` (DDB writes) —

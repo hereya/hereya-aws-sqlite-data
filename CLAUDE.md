@@ -62,8 +62,15 @@ runbook; this file is the working-agreement layer for agents.
     `PINNED_AMI_REGION` (top of the stack file) and reaches the launch template through
     `resolveMachineImage()`. Roll the OS deliberately: read
     `/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64`, bump the constant, publish,
-    connector release, announce. Accepted cost: OS patches no longer arrive by accident — the
-    twice-daily scan is what surfaces a new AL2023. `amiId=latest` re-enables auto-resolution
+    connector release, announce. Accepted cost: OS patches no longer arrive by accident — so
+    **`npm run check:ami` is the half that makes the pin safe** (`lib/ami-pin.ts`, added 2026-08-03):
+    it compares the pin with what AWS publishes and **exits non-zero** when a newer AL2023 exists, so
+    a roll gets planned instead of forgotten. It exits **2** — never 0 — when it cannot read, because
+    a check that passes while blind is worse than none. Add `--stack <name>` to also catch a pin that
+    was bumped and published but never rolled out (reported separately: that one is fixed by a
+    deploy, not an edit). This replaced a prose instruction that lived in two documents and was
+    never once executed — a stale image went unnoticed for four weeks. `amiId=latest` re-enables
+    auto-resolution
     (surprise roll included); an id is region-scoped, so the default is refused outside
     `PINNED_AMI_REGION` rather than producing an ASG that can't launch. With this, the ONLY things
     that touch the production databases are a new service and a bumped pin — both deliberate.

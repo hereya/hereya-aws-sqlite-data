@@ -8,6 +8,7 @@
     "ensure-node": "node scripts/ensure-node.mjs",
     "ensure-litestream": "node scripts/ensure-litestream.mjs",
     "ensure-vec": "node scripts/ensure-vec.mjs",
+    "check:ami": "npm run ensure-node --silent && .toolchain/node/bin/node scripts/check-ami.mjs",
     "test": "npm run ensure-node --silent && npm run ensure-vec --silent && .toolchain/node/bin/node --test 'service/test/**/*.test.ts' 'test/*.test.ts'",
     "test:unit": "npm run ensure-node --silent && npm run ensure-vec --silent && .toolchain/node/bin/node --test 'service/test/unit/*.test.ts'",
     "typecheck": "tsc --noEmit",
