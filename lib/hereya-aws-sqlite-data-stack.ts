@@ -23,18 +23,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildUserData } from "./user-data.ts";
 import { serviceContentHash } from "./service-hash.ts";
+// The instance AMI is PINNED (see CLAUDE.md invariant 12). Moving it replaces
+// the production database VM, so it moves only when a human bumps the constant
+// — never because AWS published something. The pin and the check that tells us
+// it has fallen behind (`npm run check:ami`) live together in ./ami-pin.ts.
+import { PINNED_AMI_ID, PINNED_AMI_REGION } from "./ami-pin.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-// The instance AMI is PINNED (see CLAUDE.md invariant 11). Moving it replaces
-// the production database VM, so it moves only when a human bumps these two
-// constants — never because AWS published something.
-// AL2023, kernel 6.1, arm64, eu-west-1; published 2026-07-27, in service since
-// 2026-07-30. To roll the OS: read the new id from the SSM parameter
-// /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64, bump here,
-// publish the package, and roll it out through a connector release.
-const PINNED_AMI_REGION = "eu-west-1";
-const PINNED_AMI_ID = "ami-0ab117b5527d5fe24";
 
 // Hereya package inputs arrive as plain env vars (camelCase).
 function input(name: string, fallback: string): string {
