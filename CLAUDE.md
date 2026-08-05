@@ -57,7 +57,7 @@ runbook; this file is the working-agreement layer for agents.
     remains the emergency service-only path (manual re-fetch + restart, no CDK).
 12. **The AMI is a constant, not a lookup.** The second silent roll trigger used to be
     `MachineImage.latestAmazonLinux2023()`: it re-resolves at EVERY deploy, so the first deploy
-    following an AWS publication (~monthly — 2026-06-26, 2026-07-25) replaced the instance, same
+    following an AWS publication (~monthly — 2026-06-26, 2026-07-25, 2026-08-03) replaced the instance, same
     ~60 s outage as above, on an unrelated release. The image id now lives in `PINNED_AMI_ID` /
     `PINNED_AMI_REGION` (top of the stack file) and reaches the launch template through
     `resolveMachineImage()`. Roll the OS deliberately: read
