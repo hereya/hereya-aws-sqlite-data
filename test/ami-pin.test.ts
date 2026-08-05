@@ -16,7 +16,9 @@ import {
   PINNED_AMI_ID,
   PINNED_AMI_REGION,
   amiPinStatus,
+  describeLookup,
   describeVerdict,
+  exitCodeFor,
 } from "../lib/ami-pin.ts";
 
 const AMI_A = "ami-0ab117b5527d5fe24";
@@ -91,6 +93,78 @@ test("every verdict renders one actionable sentence", () => {
   }
   // The failure text must not read like an all-clear.
   assert.match(describeVerdict(unknown, PINNED_AMI_ID), /NOT "up to date"/);
+});
+
+// ---------------------------------------------------------------------------
+// The instance lookup, and the exit code it feeds.
+//
+// Regression guarded (2026-08-05): the sweep had been running with a TRUNCATED
+// stack name, `p-263b1e67` instead of `p-263b1e67-4f7d-498a-8f5a-8635f2e68a87`.
+// The tag filter is an exact match, so it selected nothing; the script turned
+// that empty result into the same `null` it used for "no permission", printed a
+// parenthetical, and exited 0. The `instance-stale` branch — the half that
+// catches a pin bumped, published, but never rolled out — had therefore never
+// executed once since it shipped. These tests pin the property that makes that
+// impossible: an instance question that was ASKED and not ANSWERED cannot exit 0.
+// ---------------------------------------------------------------------------
+
+const CURRENT = amiPinStatus({ pinned: AMI_A, latest: AMI_A });
+const BEHIND = amiPinStatus({ pinned: AMI_B, latest: AMI_A });
+const UNKNOWN = amiPinStatus({ pinned: AMI_A, latest: null });
+
+test("a --stack that matches nothing NEVER exits 0", () => {
+  const lookup = { state: "no-match", stackName: "p-263b1e67" } as const;
+  assert.equal(exitCodeFor(CURRENT, lookup), 2);
+  // …and it says WHY, naming exact-match as the cause rather than blaming
+  // credentials — the misdiagnosis that cost us four weeks of the check.
+  const line = describeLookup(lookup);
+  assert.match(line, /exact match/);
+  assert.match(line, /NOT checked/);
+  assert.ok(line.includes("p-263b1e67"), "must name the stack it was given");
+});
+
+test("a --stack that could not be read NEVER exits 0 either", () => {
+  const lookup = {
+    state: "unreadable",
+    stackName: "p-whatever",
+    reason: "AccessDenied",
+  } as const;
+  assert.equal(exitCodeFor(CURRENT, lookup), 2);
+  assert.match(describeLookup(lookup), /AccessDenied/);
+  assert.match(describeLookup(lookup), /NOT checked/);
+});
+
+test("no --stack at all still exits 0 — the pin question needs no EC2 access", () => {
+  assert.equal(exitCodeFor(CURRENT, { state: "not-requested" }), 0);
+  assert.equal(describeLookup({ state: "not-requested" }), "");
+});
+
+test("a fully answered check exits 0 and adds no noise", () => {
+  const lookup = { state: "found", imageId: AMI_A } as const;
+  assert.equal(exitCodeFor(CURRENT, lookup), 0);
+  assert.equal(describeLookup(lookup), "");
+});
+
+test("a behind pin outranks an unanswered instance question", () => {
+  // A roll is needed whether or not the instance could be read, and 1 is the
+  // more actionable answer — so it must not be masked by "could not determine".
+  for (const lookup of [
+    { state: "no-match", stackName: "x" },
+    { state: "unreadable", stackName: "x", reason: "boom" },
+    { state: "not-requested" },
+  ] as const) {
+    assert.equal(exitCodeFor(BEHIND, lookup), 1);
+  }
+});
+
+test("an unresolvable parameter stays 2 regardless of the instance", () => {
+  assert.equal(exitCodeFor(UNKNOWN, { state: "found", imageId: AMI_A }), 2);
+  assert.equal(exitCodeFor(UNKNOWN, { state: "not-requested" }), 2);
+});
+
+test("instance-stale exits 1 — it is fixed by a deploy, not an edit", () => {
+  const stale = amiPinStatus({ pinned: AMI_A, latest: AMI_A, running: AMI_B });
+  assert.equal(exitCodeFor(stale, { state: "found", imageId: AMI_B }), 1);
 });
 
 test("the pin is measured against the parameter it was taken from", () => {

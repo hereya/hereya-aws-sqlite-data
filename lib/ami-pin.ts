@@ -96,6 +96,76 @@ export function amiPinStatus({
   return { state: "current" };
 }
 
+/**
+ * What came back when the caller asked about a specific stack's instance.
+ *
+ * The four cases exist because the script used to collapse the last three into
+ * one `null`, and that cost us the check. On 2026-08-05 the sweep ran with a
+ * TRUNCATED stack name (`p-263b1e67` for
+ * `p-263b1e67-4f7d-498a-8f5a-8635f2e68a87`). The CloudFormation tag filter is an
+ * exact match, so it selected nothing, `describe-instances` returned an empty
+ * `Reservations`, and that empty result was indistinguishable from "no
+ * permission" — reported as a gentle aside while the command exited 0. The
+ * `instance-stale` branch had therefore never once executed since it shipped.
+ *
+ * `no-match` is a bad ARGUMENT and says so; `unreadable` is a bad ENVIRONMENT.
+ * Neither may exit 0, because both leave the question the caller actually asked
+ * unanswered — the same rule that already makes an unresolvable SSM parameter
+ * `unknown` rather than `current`.
+ */
+export type InstanceLookup =
+  /** No `--stack` was passed: only the pin was ever in question. */
+  | { state: "not-requested" }
+  /** The stack's running instance was read. */
+  | { state: "found"; imageId: string }
+  /** The lookup worked and matched nothing — the stack name designates no instance. */
+  | { state: "no-match"; stackName: string }
+  /** The lookup itself failed: no CLI, no credentials, API error. */
+  | { state: "unreadable"; stackName: string; reason: string };
+
+/**
+ * The command's exit code — the part callers actually branch on.
+ *
+ * 0 in sync · 1 a roll is needed · 2 could not determine.
+ *
+ * Two rules, in this order:
+ *
+ * 1. A known-actionable verdict wins. If the pin is behind, a roll is needed
+ *    whether or not we could read an instance, so `1` — the more useful answer —
+ *    beats "could not determine".
+ * 2. Otherwise, a requested-but-unanswered instance question forbids `0`.
+ *    Passing `--stack` and getting `0` now means BOTH halves were verified;
+ *    that is the whole point of the flag.
+ */
+export function exitCodeFor(
+  verdict: AmiPinVerdict,
+  lookup: InstanceLookup,
+): 0 | 1 | 2 {
+  if (verdict.state === "behind" || verdict.state === "instance-stale") return 1;
+  if (verdict.state === "unknown") return 2;
+  return lookup.state === "not-requested" || lookup.state === "found" ? 0 : 2;
+}
+
+/** The line that explains a lookup that produced no image id. Empty when it did. */
+export function describeLookup(lookup: InstanceLookup): string {
+  switch (lookup.state) {
+    case "not-requested":
+    case "found":
+      return "";
+    case "no-match":
+      return (
+        `No running instance carries tag aws:cloudformation:stack-name=${lookup.stackName}. ` +
+        `That filter is an exact match, so a truncated or misspelt stack name selects nothing — ` +
+        `pass the FULL stack name. The instance was NOT checked.`
+      );
+    case "unreadable":
+      return (
+        `Could not read the running instance of ${lookup.stackName}: ${lookup.reason}. ` +
+        `The instance was NOT checked.`
+      );
+  }
+}
+
 /** One line a human (or a Telegram digest) can read without context. */
 export function describeVerdict(v: AmiPinVerdict, pinned: string): string {
   switch (v.state) {

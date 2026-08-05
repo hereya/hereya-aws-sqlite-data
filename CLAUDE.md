@@ -68,7 +68,13 @@ runbook; this file is the working-agreement layer for agents.
     a roll gets planned instead of forgotten. It exits **2** — never 0 — when it cannot read, because
     a check that passes while blind is worse than none. Add `--stack <name>` to also catch a pin that
     was bumped and published but never rolled out (reported separately: that one is fixed by a
-    deploy, not an edit). This replaced a prose instruction that lived in two documents and was
+    deploy, not an edit) — and pass the **FULL** stack name: the tag filter is an exact match, so a
+    truncated one selects nothing. That is not hypothetical. On 2026-08-05 the sweep ran with
+    `p-263b1e67` instead of `p-263b1e67-4f7d-498a-8f5a-8635f2e68a87`; the empty result was
+    indistinguishable from "no permission", the command exited 0, and the `instance-stale` branch had
+    never once run since it shipped. Now an unanswered instance question **cannot exit 0**
+    (`exitCodeFor`): a bad name exits 2 saying so and suggests the full one, a behind pin still
+    outranks it with 1. This replaced a prose instruction that lived in two documents and was
     never once executed — a stale image went unnoticed for four weeks. `amiId=latest` re-enables
     auto-resolution
     (surprise roll included); an id is region-scoped, so the default is refused outside
