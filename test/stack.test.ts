@@ -215,15 +215,47 @@ test("cloud map deregister-on-delete guards the service deletion", () => {
   assert.notEqual(JSON.stringify(dereg!.Resource), '"*"', "DeregisterInstance must be service-scoped");
 });
 
-test("heartbeat alarm is a dead-man switch (missing data = breaching)", () => {
-  const alarms = template.findResources("AWS::CloudWatch::Alarm");
-  const list = Object.values(alarms);
-  assert.equal(list.length, 2);
+test("every alarm notifies, in both directions", () => {
+  const list = Object.values(template.findResources("AWS::CloudWatch::Alarm"));
+  assert.equal(list.length, 4);
   for (const alarm of list) {
-    assert.equal(alarm.Properties.TreatMissingData, "breaching", "silence must trip the alarm");
-    assert.equal(alarm.Properties.ComparisonOperator, "LessThanThreshold");
     assert.ok((alarm.Properties.AlarmActions ?? []).length >= 1, "alarm must notify");
     assert.ok((alarm.Properties.OKActions ?? []).length >= 1, "recovery must notify too");
+  }
+});
+
+test("liveness alarms are dead-man switches (missing data = breaching)", () => {
+  const alarms = template.findResources("AWS::CloudWatch::Alarm");
+  for (const key of ["HeartbeatAlarm", "CapacityAlarm"]) {
+    const entry = Object.entries(alarms).find(([k]) => k.startsWith(key));
+    assert.ok(entry, `${key} must exist`);
+    assert.equal(entry![1].Properties.TreatMissingData, "breaching", "silence must trip the alarm");
+    assert.equal(entry![1].Properties.ComparisonOperator, "LessThanThreshold");
+  }
+});
+
+test("the registry table is watched on both DynamoDB failure metrics", () => {
+  // The table that resolves every customer database to its file. A throttle on
+  // it is not a Lambda error and produces no gateway 5xx, so nothing else in
+  // the account would ever report it.
+  const alarms = template.findResources("AWS::CloudWatch::Alarm");
+  const found = new Map<string, Record<string, any>>();
+  for (const [, alarm] of Object.entries(alarms)) {
+    if (alarm.Properties.Namespace === "AWS/DynamoDB") {
+      found.set(alarm.Properties.MetricName, alarm.Properties);
+    }
+  }
+  assert.deepEqual([...found.keys()].sort(), ["SystemErrors", "ThrottledRequests"]);
+  for (const props of found.values()) {
+    // Absent data means no error occurred — the healthy state, NOT a breach.
+    assert.equal(props.TreatMissingData, "notBreaching");
+    assert.equal(props.ComparisonOperator, "GreaterThanOrEqualToThreshold");
+    assert.equal(props.Threshold, 1);
+    assert.equal(props.Period, 300);
+    // Pointed at the registry table itself, never a hardcoded name.
+    const dim = (props.Dimensions ?? [])[0];
+    assert.equal(dim?.Name, "TableName");
+    assert.ok(JSON.stringify(dim?.Value).includes("RegistryTable"), "must watch the registry table");
   }
 });
 
