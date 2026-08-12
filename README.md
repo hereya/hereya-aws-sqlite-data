@@ -31,6 +31,16 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 - **App lifecycle is runtime**: adding an app = a DynamoDB registry row (`org_id`,
   `sk=app#<appId>`, `status=active`) — discovered by poll, `POST /admin/sync`, or
   request-path hot-add (restore-before-first-query). Never a CDK redeploy.
+- **Four alarms on one topic** (`AlertTopic` → the Telegram relay when its two inputs are set):
+  `<stack>-heartbeat` and `<stack>-no-instance` watch liveness (dead-man treatment — missing data
+  BREACHES); `<stack>-registry-system-errors` and `<stack>-registry-throttles` watch the registry
+  table's `SystemErrors`/`ThrottledRequests` (≥1 over 5 min, missing data is HEALTHY). The registry
+  pair exists because that table resolves *every* customer database: a throttle on it breaks all of
+  them at once, and it is invisible everywhere else — it is not a Lambda error and yields no gateway
+  5xx when the caller retries. The relay announces every ALARM but suppresses a **birth-OK**
+  (`INSUFFICIENT_DATA → OK`, `lib/heartbeat-relay/announce.js`), or each deploy that creates alarms
+  would send one "recovered" per alarm; the per-alarm wording lives in `format.js`, so a registry
+  throttle is never announced as a dead heartbeat.
 
 ## HTTP API (all routes IAM-authorized)
 
