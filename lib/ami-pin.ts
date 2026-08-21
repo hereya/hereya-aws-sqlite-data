@@ -22,15 +22,15 @@
 export const PINNED_AMI_REGION = "eu-west-1";
 
 /**
- * AL2023, kernel 6.1, arm64, eu-west-1; published 2026-08-03, rolled 2026-08-05
- * (previous pin: `ami-0ab117b5527d5fe24`, published 2026-07-27 — the first roll
- * `check:ami` ever asked for, four days after the check existed). To roll the
- * OS: `npm run check:ami`, bump this constant to the id it reports, publish the
- * package, and roll it out through a connector release. Rolling replaces the VM
- * — ~60 s with no Data API — so it is a dated, announced act, never a side
- * effect.
+ * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20260817.0`,
+ * published 2026-08-17, rolled 2026-08-21 (previous pin:
+ * `ami-053d8df569ac57bbb`, published 2026-08-03 — itself the roll of
+ * 2026-08-05). To roll the OS: `npm run check:ami`, bump this constant to the
+ * id it reports, publish the package, and roll it out through a connector
+ * release. Rolling replaces the VM — ~60 s with no Data API — so it is a dated,
+ * announced act, never a side effect.
  */
-export const PINNED_AMI_ID = "ami-053d8df569ac57bbb";
+export const PINNED_AMI_ID = "ami-0c941aaee6f2de47e";
 
 /**
  * The SSM public parameter the pin is measured against. It MUST stay the same
