@@ -193,6 +193,46 @@ fatal error: thread exhaustion
 30 019 goroutines at that point. **5 000 databases run fine** (1.85 GB RSS,
 30 006 fds), so the wall sits between 5 000 and 10 000 per process.
 
+**The threshold was then bisected (2026-08-24, run 3) and it depends on the
+BACKEND — the opposite way round from what was predicted.** S3 was expected to
+hit the wall sooner because it is slower; it hits it LATER. At the same 7 500
+databases the file backend holds **1.27× more threads** (8 929 vs 7 014) and
+**4.8× more file descriptors** (45 006 vs 9 313). The likely reason: the S3
+client multiplexes over a bounded HTTP connection pool, while the file backend
+does direct blocking I/O — one thread per operation in flight.
+
+Measured on **S3, the production backend** (all survive):
+
+| databases | OS threads | threads/db |
+|---|---|---|
+| 6 000 | 5 984 | 0.997 |
+| 7 500 | 7 014 | 0.935 |
+| 8 750 | 8 311 | 0.950 |
+| 9 000 | 8 448 | 0.939 |
+
+    threads ≈ 847 + 0.844 × databases     →  10 000 threads at ~10 800 databases
+
+That model also explains the run-2 crash exactly: on `file://` at 1.191
+threads/db, 10 000 databases need ~11 900 threads (over the ceiling → crash),
+whereas the same count on S3 would need ~9 300 (under it).
+
+**Operational recommendation: 5 000 apps per VM — half the measured threshold.**
+Not a round number for its own sake:
+
+1. **The measurement is steady-state, the crash is a startup event.** Every
+   database opens at once at boot and the thread count peaks higher than what a
+   sample ten minutes later shows. The apparent margin is thinner than it looks.
+2. **The test databases are empty.** A database being written holds operations
+   in flight, hence threads. Today's fleet is nearly inert; the target fleet is
+   not.
+3. **This wall gives no warning** — no degradation, no slowdown. The process
+   simply stops starting, and all replication halts at once. A ceiling that
+   falls without notice deserves more margin than one that creaks.
+
+⚠ RSS samples from run 3 are **not plateaus** (1.5-7.8 GB swings at the same
+tier — the 600 s settle is not enough for an S3 upload burst at these counts),
+so the memory figures above come from run 2's `file://` tiers, not this one.
+
 Three properties that matter more than the number:
 
 1. **It is a crash, not degradation.** When it goes, replication stops for
