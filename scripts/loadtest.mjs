@@ -19,6 +19,13 @@
 // — it would produce a fast, meaningless number and it is the easiest way to
 // get this test wrong.
 //
+// A SECOND harness lives beside this one: `scripts/loadtest-ec2-userdata.sh`,
+// which measures litestream ALONE (no service, no Node) on a disposable EC2
+// instance. Use that one for the platform and backend questions — this file
+// runs the real service but only on the developer's machine, and the 2026-08-24
+// run proved that matters: on macOS the marginal cost per database appeared to
+// FALL with N, while on linux/arm64 it rises. The trend was an artifact.
+//
 // Usage:
 //   node scripts/loadtest.mjs --n 500 --replica file:///tmp/lt-replicas
 //   node scripts/loadtest.mjs --n 500,1000,2500 --replica s3://bucket/prefix
