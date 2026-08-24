@@ -21,6 +21,26 @@ export class AppSync {
   private readonly manager: AppManager;
   private readonly litestream: Litestream;
   private readonly served = new Map<string, LitestreamApp>();
+  /**
+   * The apps litestream actually replicates — a SUBSET of `served`.
+   *
+   * An app that has never been written has no replica in S3 and no data on
+   * disk; replicating it buys nothing and costs a per-database timer set that
+   * LISTs the replica prefix on every tick, plus ~1 OS thread and ~0.46 MB of
+   * litestream RSS. At 10 000 apps those timers are the whole S3 request bill
+   * (measured 2026-08-24), and the threads are what caps how many apps a VM
+   * can hold at all.
+   *
+   * So a `fresh` app is served (it can answer queries) but NOT replicated
+   * (nothing is watching it). It is promoted the first time a request touches
+   * it — see `ensureServed`, which every data route passes through BEFORE any
+   * statement runs, so no acknowledged write can precede replication.
+   *
+   * The safety of this rests on one fact: a `fresh` app holds NO DATA. There is
+   * nothing to lose by not replicating it — unlike evicting an app that has
+   * data, which is a separate and genuinely risky design.
+   */
+  private readonly replicated = new Set<string>();
   private readonly pending = new Map<string, Promise<void>>();
   private syncing: Promise<{ added: number; removed: number }> | null = null;
   /** Boot-restore fan-out width; see bootRestoreAll. Defaults to the serial
@@ -88,13 +108,19 @@ export class AppSync {
           appId: ref.appId,
           dbPath: this.manager.dbPath(ref.orgId, ref.appId),
         };
+        let outcome;
         try {
-          await this.litestream.restoreIfMissing(app);
+          outcome = await this.litestream.restoreIfMissing(app);
         } catch (err) {
           if (firstError === null) firstError = err;
           return;
         }
-        this.served.set(appKeyOf(ref.orgId, ref.appId), app);
+        const key = appKeyOf(ref.orgId, ref.appId);
+        this.served.set(key, app);
+        // "fresh" = no replica existed = never written. Leave it out of the
+        // config; a request promotes it. Anything else HAS data and must be
+        // replicated from the start.
+        if (outcome !== "fresh") this.replicated.add(key);
       }
     };
 
@@ -106,14 +132,29 @@ export class AppSync {
     log({
       event: "boot-restore-complete",
       apps: this.served.size,
+      replicated: this.replicated.size,
+      unusedSkipped: this.served.size - this.replicated.size,
       concurrency: width,
       ms: Date.now() - startedAt,
     });
+    return this.replicatedApps;
+  }
+
+  /** Every app this instance can answer queries for. */
+  get servedApps(): LitestreamApp[] {
     return [...this.served.values()];
   }
 
-  get servedApps(): LitestreamApp[] {
-    return [...this.served.values()];
+  /** The apps litestream watches — what `buildConfig` must be given. */
+  get replicatedApps(): LitestreamApp[] {
+    const out: LitestreamApp[] = [];
+    for (const [key, app] of this.served) if (this.replicated.has(key)) out.push(app);
+    return out;
+  }
+
+  /** How many served apps are deliberately NOT replicated (never written). */
+  get unusedCount(): number {
+    return this.served.size - this.replicated.size;
   }
 
   isServed(orgId: string, appId: string): boolean {
@@ -129,18 +170,31 @@ export class AppSync {
    */
   async ensureServed(orgId: string, appId: string): Promise<void> {
     const key = appKeyOf(orgId, appId);
-    if (this.served.has(key)) return;
+    // Served AND replicated: nothing to do — the overwhelmingly common path.
+    if (this.served.has(key) && this.replicated.has(key)) return;
     const existing = this.pending.get(key);
     if (existing) return existing;
     const task = (async () => {
       const app: LitestreamApp = { orgId, appId, dbPath: this.manager.dbPath(orgId, appId) };
+      const wasServed = this.served.has(key);
       try {
-        await this.litestream.restoreIfMissing(app);
-        this.served.set(key, app);
-        await this.litestream.bounce(this.servedApps);
-        log({ event: "hot-add", orgId, appId });
+        // Already served but not replicated = a never-written app being touched
+        // for the first time. The local file is already correct, so restoring
+        // again would be wrong (it would be a no-op at best); it only needs to
+        // enter the config.
+        if (!wasServed) {
+          await this.litestream.restoreIfMissing(app);
+          this.served.set(key, app);
+        }
+        this.replicated.add(key);
+        await this.litestream.bounce(this.replicatedApps);
+        log({ event: wasServed ? "promoted" : "hot-add", orgId, appId });
       } catch (err) {
-        this.served.delete(key);
+        // Roll back only what this call added, so a failure cannot leave the
+        // app half-registered — and never un-serve an app that was already
+        // serving before we got here.
+        this.replicated.delete(key);
+        if (!wasServed) this.served.delete(key);
         throw new ServiceError("UNAVAILABLE", `app could not be prepared: ${(err as Error).message}`);
       } finally {
         this.pending.delete(key);
@@ -159,14 +213,17 @@ export class AppSync {
   async removeApp(orgId: string, appId: string): Promise<void> {
     const key = appKeyOf(orgId, appId);
     const wasServed = this.served.delete(key);
+    const wasReplicated = this.replicated.delete(key);
     await this.manager.removeApp(orgId, appId);
     try {
       rmSync(dirname(this.manager.dbPath(orgId, appId)), { recursive: true, force: true });
     } catch (err) {
       log({ event: "remove-cleanup-failed", orgId, appId, message: (err as Error).message });
     }
-    if (wasServed) await this.litestream.bounce(this.servedApps);
-    log({ event: "removed", orgId, appId, wasServed });
+    // Only a REPLICATED app was in the config, so only its removal needs a
+    // bounce — dropping an unused app changes nothing litestream can see.
+    if (wasReplicated) await this.litestream.bounce(this.replicatedApps);
+    log({ event: "removed", orgId, appId, wasServed, wasReplicated });
   }
 
   /** Full reconcile: registry is the source of truth for adds AND removals. */
@@ -193,14 +250,16 @@ export class AppSync {
         appId: ref.appId,
         dbPath: this.manager.dbPath(ref.orgId, ref.appId),
       };
-      await this.litestream.restoreIfMissing(app);
+      const outcome = await this.litestream.restoreIfMissing(app);
       this.served.set(key, app);
+      if (outcome !== "fresh") this.replicated.add(key);
       added += 1;
     }
 
     for (const [key, app] of [...this.served]) {
       if (target.has(key)) continue;
       this.served.delete(key);
+      this.replicated.delete(key);
       await this.manager.removeApp(app.orgId, app.appId);
       // Local file goes; the S3 replica is retained as the durable archive
       // (cleanup is a documented manual op — litestream retention stops with
@@ -215,7 +274,7 @@ export class AppSync {
     }
 
     if (added > 0 || removed > 0) {
-      await this.litestream.bounce(this.servedApps);
+      await this.litestream.bounce(this.replicatedApps);
     }
     return { added, removed };
   }
