@@ -385,6 +385,12 @@ exports.handler = async (event) => {
           // Per-app write recency — the hot path is memory only; this is how
           // often it is persisted so it survives an instance replacement.
           WRITE_STATS_FLUSH_MS: input("writeStatsFlushMs", "300000"),
+          // Eviction: days without a WRITE before an app leaves the litestream
+          // config (it stays served and readable). "0" = off, and off is the
+          // default on purpose — the threshold is what makes eviction safe (it
+          // must dwarf the ~1s replication lag), so it is never inferred.
+          EVICTION_IDLE_DAYS: input("evictionIdleDays", "0"),
+          EVICTION_SWEEP_MS: input("evictionSweepMs", "3600000"),
           HEARTBEAT_ENABLED: "1",
           HEARTBEAT_DIMENSION: this.stackName,
           IMDS_ENABLED: "1",

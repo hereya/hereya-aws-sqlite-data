@@ -66,6 +66,14 @@ export interface Config {
    *  touches memory; this is the cost of making that memory survive an
    *  instance replacement. 0 disables persistence entirely. */
   writeStatsFlushMs: number;
+  /** Days an app may go without CHANGING its database before it leaves the
+   *  litestream config (it stays served and readable — see src/eviction.ts).
+   *  0 disables eviction, which is the default: it is switched on
+   *  deliberately, per environment. */
+  evictionIdleDays: number;
+  /** How often the eviction sweep runs, ms. Nothing about it is urgent — the
+   *  thing it reclaims accrues over days — so this is deliberately slow. */
+  evictionSweepMs: number;
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;
@@ -247,6 +255,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     litestreamLevelIntervals: levelIntervals,
     bootRestoreConcurrency: bootRestoreConcurrency,
     writeStatsFlushMs: intEnv("WRITE_STATS_FLUSH_MS", 300_000),
+    // OFF by default. The safety of eviction rests on the threshold being far
+    // larger than the replication lag, so the number is never inferred — an
+    // operator sets it, or nothing is evicted.
+    evictionIdleDays: intEnv("EVICTION_IDLE_DAYS", 0),
+    evictionSweepMs: intEnv("EVICTION_SWEEP_MS", 3_600_000),
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",

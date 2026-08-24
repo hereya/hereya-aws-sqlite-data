@@ -75,6 +75,8 @@ export async function startTestService(
     litestreamLevelIntervals: ["30s", "5m", "1h"],
     bootRestoreConcurrency: 8,
     writeStatsFlushMs: 0,
+    evictionIdleDays: 0,
+    evictionSweepMs: 0,
     heartbeatEnabled: false,
     heartbeatPeriodSeconds: 60,
     heartbeatDimension: "test",

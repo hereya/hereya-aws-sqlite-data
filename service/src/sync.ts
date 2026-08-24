@@ -5,6 +5,7 @@ import { appKeyOf } from "./apps.ts";
 import type { Litestream, LitestreamApp } from "./litestream.ts";
 import type { Registry } from "./registry.ts";
 import { ServiceError } from "./errors.ts";
+import { EVICT_TOUCH_GRACE_MS, planEviction, type EvictionPlan, type EvictionProbe } from "./eviction.ts";
 
 function log(event: Record<string, unknown>): void {
   console.log(JSON.stringify({ type: "sync", ...event }));
@@ -43,6 +44,40 @@ export class AppSync {
   private readonly replicated = new Set<string>();
   private readonly pending = new Map<string, Promise<void>>();
   private syncing: Promise<{ added: number; removed: number }> | null = null;
+  /**
+   * Serializes every mutation of the litestream config.
+   *
+   * `bounce` rewrites the config file from a SNAPSHOT of the replicated set.
+   * Two callers overlapping — a request promoting an app while the eviction
+   * sweep or the registry poll bounces — could therefore let the later write
+   * land a config computed before the earlier change, leaving an app inside
+   * `replicated` but absent from the file litestream actually reads. That is
+   * an app believed replicated and in fact unwatched: the exact silent-loss
+   * shape this whole feature has to avoid.
+   *
+   * Holding a lock across "decide + mutate + bounce" makes the two views
+   * impossible to disagree: whoever writes the config last computed it from the
+   * set as it stood under this lock.
+   */
+  private configOp: Promise<unknown> = Promise.resolve();
+  /**
+   * When each app last passed through `ensureServed`.
+   *
+   * This exists to close a window that is invisible from either side alone.
+   * `ensureServed` returns immediately when an app is already replicated — the
+   * hot path — and the caller (`server.ts authorize()`) only acquires its
+   * limiter slot AFTERWARDS. Between those two moments the app is in NOBODY's
+   * count: `inFlight` is still zero and no transaction is open, so an eviction
+   * sweep landing in that gap sees a perfectly idle app, drops it from the
+   * config, and the statement that was already cleared to run writes to a
+   * database litestream is no longer watching.
+   *
+   * A grace period on "was cleared to run recently" is what covers it, and it
+   * costs nothing: the eviction threshold is measured in DAYS, so refusing to
+   * evict an app touched in the last few minutes cannot change the outcome for
+   * a genuinely inert one.
+   */
+  private readonly lastTouch = new Map<string, number>();
   /** Boot-restore fan-out width; see bootRestoreAll. Defaults to the serial
    *  behaviour's successor rather than to 1, but callers that do not care
    *  (tests, the file registry) need not thread it through. */
@@ -140,6 +175,15 @@ export class AppSync {
     return this.replicatedApps;
   }
 
+  /** Run `fn` with exclusive ownership of the litestream config. Runs after
+   *  the previous holder settles, whether it resolved or threw — a failed
+   *  bounce must not wedge every later one. */
+  private withConfig<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.configOp.then(fn, fn);
+    this.configOp = run.catch(() => undefined);
+    return run;
+  }
+
   /** Every app this instance can answer queries for. */
   get servedApps(): LitestreamApp[] {
     return [...this.served.values()];
@@ -170,6 +214,10 @@ export class AppSync {
    */
   async ensureServed(orgId: string, appId: string): Promise<void> {
     const key = appKeyOf(orgId, appId);
+    // Stamped BEFORE the early return, deliberately: the fast path is exactly
+    // the one that leaves no other trace, and it is the one the eviction sweep
+    // could otherwise cut in behind. See `lastTouch`.
+    this.lastTouch.set(key, Date.now());
     // Served AND replicated: nothing to do — the overwhelmingly common path.
     if (this.served.has(key) && this.replicated.has(key)) return;
     const existing = this.pending.get(key);
@@ -186,8 +234,14 @@ export class AppSync {
           await this.litestream.restoreIfMissing(app);
           this.served.set(key, app);
         }
-        this.replicated.add(key);
-        await this.litestream.bounce(this.replicatedApps);
+        // Under the config lock: the set is joined and the config rewritten
+        // without any other bounce able to interleave between the two. This
+        // await is what every data route is waiting on, so when it returns the
+        // app is in the file litestream is reading — not merely in a Set.
+        await this.withConfig(async () => {
+          this.replicated.add(key);
+          await this.litestream.bounce(this.replicatedApps);
+        });
         log({ event: wasServed ? "promoted" : "hot-add", orgId, appId });
       } catch (err) {
         // Roll back only what this call added, so a failure cannot leave the
@@ -202,6 +256,52 @@ export class AppSync {
     })();
     this.pending.set(key, task);
     return task;
+  }
+
+  /**
+   * Drop every app that has been quiet for `thresholdMs` from the litestream
+   * config — one bounce for the whole batch, not one per app.
+   *
+   * The plan is computed INSIDE the config lock, deliberately. A plan made
+   * outside it can go stale in the microseconds before it is applied: a request
+   * arriving in that window promotes its app (and writes to it), and applying
+   * the older decision afterwards would evict an app that had just been
+   * written. Deciding under the lock means the idleness, the open-transaction
+   * check and the in-flight count are all read from the same instant the
+   * config is rewritten from.
+   *
+   * Apps mid-promotion (`pending`) are excluded outright: that promise is a
+   * request waiting to write.
+   *
+   * Nothing is restored, deleted or closed here. The app stays served, its file
+   * stays on disk, reads keep working untouched — the only thing that changes
+   * is that litestream stops watching it until the next statement brings it
+   * back through `ensureServed`.
+   */
+  async evictIdle(probe: EvictionProbe, thresholdMs: number): Promise<EvictionPlan> {
+    return this.withConfig(async () => {
+      const now = Date.now();
+      const candidates = [...this.replicated].filter((key) => {
+        // Mid-promotion: that promise is a request waiting to write.
+        if (this.pending.has(key)) return false;
+        // Cleared to run moments ago: its statement may not have reached the
+        // limiter yet, so no other check can see it.
+        const touched = this.lastTouch.get(key);
+        return touched === undefined || now - touched >= EVICT_TOUCH_GRACE_MS;
+      });
+      const plan = planEviction(candidates, probe, thresholdMs);
+      if (plan.evict.length === 0) return plan;
+      for (const key of plan.evict) this.replicated.delete(key);
+      await this.litestream.bounce(this.replicatedApps);
+      log({
+        event: "evicted",
+        apps: plan.evict.length,
+        stillReplicated: this.replicated.size,
+        served: this.served.size,
+        skipped: plan.skipped,
+      });
+      return plan;
+    });
   }
 
   /**
@@ -222,7 +322,7 @@ export class AppSync {
     }
     // Only a REPLICATED app was in the config, so only its removal needs a
     // bounce — dropping an unused app changes nothing litestream can see.
-    if (wasReplicated) await this.litestream.bounce(this.replicatedApps);
+    if (wasReplicated) await this.withConfig(() => this.litestream.bounce(this.replicatedApps));
     log({ event: "removed", orgId, appId, wasServed, wasReplicated });
   }
 
@@ -274,7 +374,7 @@ export class AppSync {
     }
 
     if (added > 0 || removed > 0) {
-      await this.litestream.bounce(this.replicatedApps);
+      await this.withConfig(() => this.litestream.bounce(this.replicatedApps));
     }
     return { added, removed };
   }
