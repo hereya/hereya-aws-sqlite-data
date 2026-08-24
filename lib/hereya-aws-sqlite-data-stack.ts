@@ -357,6 +357,11 @@ exports.handler = async (event) => {
           REGISTRY_POLL_SECONDS: input("registryPollSeconds", "30"),
           LITESTREAM_SYNC_INTERVAL_MS: input("litestreamSyncIntervalMs", "1000"),
           LITESTREAM_RETENTION: input("litestreamRetention", "72h"),
+          // Housekeeping cadence — the S3 REQUEST bill, not durability. See the
+          // parameter docs in hereyarc.yaml.
+          LITESTREAM_L0_RETENTION: input("litestreamL0Retention", "3h"),
+          LITESTREAM_L0_RETENTION_CHECK_INTERVAL: input("litestreamL0RetentionCheckInterval", "30m"),
+          LITESTREAM_LEVEL_INTERVALS: input("litestreamLevelIntervals", "30m,2h,6h"),
           HEARTBEAT_ENABLED: "1",
           HEARTBEAT_DIMENSION: this.stackName,
           IMDS_ENABLED: "1",

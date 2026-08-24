@@ -74,7 +74,40 @@ preload). Boot fail-fasts if the extension doesn't load (`vec_version()` self-ch
 
 Inputs (env/`-p`): `instanceType` (t4g.micro), `autoDelete`, `servicePort`, `sqlTimeoutMs`,
 `maxInflightPerApp`, `maxLiveWorkers`, `registryPollSeconds`, `litestreamSyncIntervalMs`,
-`litestreamRetention`, `amiId`, `telegramBotTokenParam` (SSM SecureString *name*), `telegramChatId`.
+`litestreamRetention`, `litestreamL0Retention`, `litestreamL0RetentionCheckInterval`,
+`litestreamLevelIntervals`, `amiId`, `telegramBotTokenParam` (SSM SecureString *name*),
+`telegramChatId`.
+
+**The housekeeping cadences are the S3 request bill; `litestreamSyncIntervalMs` is the loss
+window. They are different axes.** Litestream runs the L0 retention sweep and each compaction
+level as a *fixed timer per database*, whether or not that database was written to, and every
+tick LISTs the replica prefix. So the cost tracks the NUMBER OF APPS, not traffic: a database
+untouched for three weeks pays the same as a busy one. Measured on the production fleet over
+2026-08-01..24 (69 active databases, litestream defaults): **16 520 269 `ListBucket` = 82.60 USD**
+against **50 745 `PutObject` = 0.25 USD** — 99.7 % of the S3 request bill was looking, not
+writing. The modelled rate at the defaults (L0 sweep 15s + L1 30s + L2 5m + L3 1h + snapshot 6h
+= 8 956 LISTs/db/day x 69) lands within 11 % of the measured 688 344/day, and that arithmetic
+also proves the 1 s replication loop does **not** list: if it did, it alone would bill 5.96 M/day,
+8.7x the whole observed total.
+
+The consequence is worth stating plainly, because it inverts the obvious move: **raising
+`litestreamSyncIntervalMs` buys almost nothing and costs durability**, while slowing the
+housekeeping intervals buys nearly all of it and costs only restore speed — the loss window on a
+brutal VM death stays exactly `litestreamSyncIntervalMs`.
+
+**One combination here loses DATA rather than money, and the service refuses to boot on it.**
+`litestreamL0Retention` must be at least **2x** the level-1 interval: a transaction lands in L0
+first and may only be swept once level 1 has merged it, so a shorter retention deletes writes that
+were never copied anywhere else — and nothing reports it, since litestream keeps replicating and
+every metric stays green until the day someone restores. Equal is not enough either: a file written
+just after a compaction waits nearly a full interval for the next one, so an equal retention races
+with it. The pair is easy to get wrong *by accident* precisely because the two values are tuned for
+opposite reasons — slowing compaction is what saves the money, and the retention is the one you
+forget to move with it. Hence `assertL0RetentionCoversL1` at boot rather than this paragraph: a
+README cannot fail a deploy. Litestream's own config parsing is non-strict, so a key it does not recognise is
+dropped in silence and the built-in default applies — which is why the service validates these
+durations at boot and refuses to start on a malformed one, and why the test suite asserts
+against the running daemon's reported intervals rather than merely against a config that parses.
 
 **`amiId` — the VM image is pinned.** Default = a specific AL2023 arm64 image of eu-west-1
 (`PINNED_AMI_ID` in `lib/ami-pin.ts`), *not* "the latest one". Replacing the
