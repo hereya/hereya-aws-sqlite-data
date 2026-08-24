@@ -104,12 +104,33 @@ runbook; this file is the working-agreement layer for agents.
 
 - Kill-instance recovery: **53s** end-to-end (terminate → new on-demand instance →
   restore → first successful query). Kill-process: systemd restart < 10s, no ASG event.
+  ⚠ That 53s was measured on a handful of apps and **no longer describes the fleet** — see the
+  2026-08-24 measurement below.
 - Noisy-neighbor: victim p95 143→144ms under a 40-bomb flood. A flooding app's QUEUED
   requests can exceed API Gateway's 30s integration timeout → the gateway returns 503
   (retryable) for those; per-app cap returns 429; the SQL deadline returns 408. All three
   are contained to the offending app.
 - **Spot reality check**: t4g Spot went unfulfillable across 2 AZs + 2 sizes in eu-west-1
   for >10 min — that's why the default is on-demand (`spotPercentage=0`); Spot is opt-in.
+
+## Boot-restore window (prod measurement, 2026-08-24)
+
+Measured on the instance the 0.1.19 deploy replaced (`i-0a5e2f9882637bdcf`, 10:15:28 → 10:16:40):
+**61 apps, 72s, serial** — and the whole window is a TOTAL OUTAGE, since invariant 2 binds the
+port only after the last restore.
+
+The shape matters more than the total: **54 of the 61 inter-restore gaps were exactly 1s and only
+one was 14s**, because a single org holds **1320 MB of the fleet's 1352 MB**. So ~58 of those 72
+seconds were fixed per-app overhead (litestream subprocess spawn + S3 round-trips) paid on
+near-empty databases. The window is **latency-bound, not bandwidth-bound** — which is why the fix
+was concurrency (`bootRestoreConcurrency`, default 8) and NOT lazy restore: the bound is removed
+without trading away restore-then-serve. Serially it was ~1.15 s/app, i.e. ~19 min at 1000 apps.
+
+The other half of that measurement, for the record: **litestream bounces are NOT a scaling term.**
+`doSync` bounces only `if (added > 0 || removed > 0)`, so the reconciliation timer never restarts
+replication on its own — confirmed by 30 min of prod journal with a single `replicate-started` and
+no exit. Real creation rate: 61 apps over 51 days, peak 15 in one day = ~15s of cumulative
+replication pause on the worst day.
 
 ## Connector-track interfaces (implemented)
 

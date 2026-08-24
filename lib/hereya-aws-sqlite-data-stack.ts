@@ -362,6 +362,11 @@ exports.handler = async (event) => {
           LITESTREAM_L0_RETENTION: input("litestreamL0Retention", "3h"),
           LITESTREAM_L0_RETENTION_CHECK_INTERVAL: input("litestreamL0RetentionCheckInterval", "30m"),
           LITESTREAM_LEVEL_INTERVALS: input("litestreamLevelIntervals", "30m,2h,6h"),
+          // Boot-restore fan-out. This is an AVAILABILITY setting, not a cost
+          // one: the whole restore window is a total outage for every org, and
+          // it was serial until 2026-08-24 (61 apps, 72s measured). See the
+          // parameter docs in hereyarc.yaml.
+          BOOT_RESTORE_CONCURRENCY: input("bootRestoreConcurrency", "8"),
           HEARTBEAT_ENABLED: "1",
           HEARTBEAT_DIMENSION: this.stackName,
           IMDS_ENABLED: "1",

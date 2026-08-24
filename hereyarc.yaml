@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.19
+version: 0.1.20
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -29,6 +29,10 @@ parameters:
     description: "Intervalles de compaction des niveaux 1..N, séparés par des virgules et dans l'ordre croissant (défaut '30m,2h,6h' ; litestream livre '30s,5m,1h'). Mêmes propriétés que litestreamL0RetentionCheckInterval : minuteurs fixes par base, indépendants des écritures, un LIST par tic, sans effet sur la fenêtre de perte. Chaque niveau doit être strictement plus lent que le précédent, sinon le service refuse de démarrer."
     mandatory: false
     default: "30m,2h,6h"
+  bootRestoreConcurrency:
+    description: "Nombre d'apps restaurées en parallèle au démarrage de la VM (défaut 8, plage 1..64). Réglage de DISPONIBILITÉ, pas de coût : l'invariant « restaurer avant de servir » est intact — toutes les apps sont restaurées avant que le port ne soit ouvert — mais toute cette fenêtre est une panne totale, aucune org ne peut lire ni écrire jusqu'à sa fin, et elle croît linéairement avec le nombre d'apps vendues. Mesuré en prod le 24/08/2026 : 61 apps restaurées EN SÉRIE en 72 s, dont 54 écarts d'exactement 1 s et un seul de 14 s — une seule org porte 1320 Mo sur les 1352 Mo de la flotte. La fenêtre est donc à ~80 % des frais fixes par app (un sous-processus litestream + des allers-retours S3) payés sur des bases quasi vides : elle est bornée par la LATENCE, pas par le débit, et c'est exactement le cas où la concurrence rend un gain quasi linéaire. Chaque restauration étant un sous-processus, la valeur est bornée : la VM par défaut est une t4g.micro (916 Mo de RAM), ne pas monter ce nombre sans mesurer la mémoire."
+    mandatory: false
+    default: "8"
   amiId:
     description: "AMI of the database VM. Pinned by default to a specific AL2023 arm64 image of eu-west-1, so that an ordinary deploy NEVER replaces the instance (a replacement = ~60s with no Data API for every org). Bump the pin — in lib/hereya-aws-sqlite-data-stack.ts — or pass an id here to move the OS deliberately. 'latest' restores auto-resolution of the newest AL2023 arm64 image at every deploy (and with it the surprise replacement); outside eu-west-1, 'latest' or a region-local id is required."
     mandatory: false

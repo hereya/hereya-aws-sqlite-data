@@ -46,6 +46,22 @@ export interface Config {
   litestreamL0RetentionCheckInterval: string;
   /** Compaction intervals for levels 1..N, in order (yaml `levels[].interval`). */
   litestreamLevelIntervals: string[];
+  /** How many app databases boot-restore concurrently (spec §4 steps 2-3).
+   *  Invariant 2 is unchanged — EVERY app is still restored before the port
+   *  binds; only the order within that window becomes concurrent.
+   *  Measured on prod 2026-08-24 (instance replaced by the 0.1.19 deploy):
+   *  61 apps restored SERIALLY in 72s, and the shape of that window is what
+   *  matters — 54 of the 61 gaps were exactly 1s and only ONE was 14s, because
+   *  a single org holds 1320 MB of the fleet's 1352 MB. So ~58 of those 72
+   *  seconds were fixed per-app overhead (a litestream subprocess spawn plus
+   *  S3 round-trips) paid on databases that are essentially empty. The window
+   *  is LATENCY-bound, not bandwidth-bound, which is precisely the case where
+   *  concurrency buys a near-linear speedup: at 8-wide the same fleet should
+   *  land near the 14s floor set by that one real database.
+   *  This matters because the whole window is a total outage — the Data API is
+   *  unreachable for EVERY org until it ends — and it grows linearly with apps
+   *  sold: ~1.15 s/app serially would be ~19 min at 1000 apps. */
+  bootRestoreConcurrency: number;
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;
@@ -175,6 +191,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`invalid REGISTRY_MODE: ${env.REGISTRY_MODE}`);
   }
 
+  // A zero or absurd width would either stall the boot forever or spawn one
+  // litestream subprocess per app at once; both are worse than the serial loop
+  // this replaces, so the bound is validated here where a typo is loud rather
+  // than clamped silently.
+  const bootRestoreConcurrency = intEnv("BOOT_RESTORE_CONCURRENCY", 8);
+  if (bootRestoreConcurrency < 1 || bootRestoreConcurrency > 64) {
+    throw new Error(
+      `invalid BOOT_RESTORE_CONCURRENCY: ${bootRestoreConcurrency} (expected 1..64)`,
+    );
+  }
+
   const l0Retention = durationEnv("LITESTREAM_L0_RETENTION", "3h");
   const levelIntervals = parseLevelIntervals(env.LITESTREAM_LEVEL_INTERVALS, ["30m", "2h", "6h"]);
   assertL0RetentionCoversL1(l0Retention, levelIntervals);
@@ -214,6 +241,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     litestreamL0Retention: l0Retention,
     litestreamL0RetentionCheckInterval: durationEnv("LITESTREAM_L0_RETENTION_CHECK_INTERVAL", "30m"),
     litestreamLevelIntervals: levelIntervals,
+    bootRestoreConcurrency: bootRestoreConcurrency,
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",
