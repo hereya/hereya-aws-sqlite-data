@@ -116,7 +116,10 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   }, cfg.registryPollSeconds * 1000);
   poller.unref();
 
-  const heartbeat = new Heartbeat(cfg, () => litestream.healthy);
+  const heartbeat = new Heartbeat(cfg, () => litestream.healthy, undefined, {
+    litestreamPid: () => litestream.childPid,
+    servedApps: () => sync.servedApps.length,
+  });
   heartbeat.start();
 
   const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry, cloudMap });
