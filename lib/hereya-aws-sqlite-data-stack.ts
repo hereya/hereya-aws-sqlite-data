@@ -274,6 +274,21 @@ exports.handler = async (event) => {
         resources: [table.tableArn],
       }),
     );
+    // Per-app write recency (service/src/write-stats.ts). WRITE access is
+    // granted, but ONLY into the fixed `_writestats` partition — the condition
+    // is on the partition key itself, so this role still cannot touch a single
+    // org or app row. That matters: the registry is the source of truth the
+    // double control reads, and the data plane has no business writing to it.
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "WriteStats",
+        actions: ["dynamodb:UpdateItem"],
+        resources: [table.tableArn],
+        conditions: {
+          "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["_writestats"] },
+        },
+      }),
+    );
     role.addToPolicy(
       new iam.PolicyStatement({
         sid: "Heartbeat",
@@ -367,6 +382,9 @@ exports.handler = async (event) => {
           // it was serial until 2026-08-24 (61 apps, 72s measured). See the
           // parameter docs in hereyarc.yaml.
           BOOT_RESTORE_CONCURRENCY: input("bootRestoreConcurrency", "8"),
+          // Per-app write recency — the hot path is memory only; this is how
+          // often it is persisted so it survives an instance replacement.
+          WRITE_STATS_FLUSH_MS: input("writeStatsFlushMs", "300000"),
           HEARTBEAT_ENABLED: "1",
           HEARTBEAT_DIMENSION: this.stackName,
           IMDS_ENABLED: "1",

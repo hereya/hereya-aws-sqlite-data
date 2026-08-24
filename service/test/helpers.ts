@@ -74,6 +74,7 @@ export async function startTestService(
     litestreamL0RetentionCheckInterval: "15s",
     litestreamLevelIntervals: ["30s", "5m", "1h"],
     bootRestoreConcurrency: 8,
+    writeStatsFlushMs: 0,
     heartbeatEnabled: false,
     heartbeatPeriodSeconds: 60,
     heartbeatDimension: "test",
