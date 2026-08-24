@@ -490,11 +490,16 @@ exports.handler = async (event) => {
     // catches it running out of room to grow, which is the failure that
     // actually limits how many apps can be sold.
     //
-    // Measured 2026-08-24: litestream holds ~0.93 MB of RSS per database, and
-    // the default instance has 916 MB — so the ceiling sits somewhere in the
-    // low hundreds of apps, far nearer than any cost ceiling. Until now that
-    // number could only be obtained by opening an SSM session and running `ps`
-    // by hand, which is to say it was never obtained at all.
+    // Measured 2026-08-24 (scripts/loadtest.mjs, N = 20..1000):
+    //   RSS ~= 65 MB baseline + 0.268 MB per database.
+    // NB the first reading of this — 56.9 MB at 61 databases — was divided to
+    // give "0.93 MB per database", which overstated the MARGINAL cost by ~3.4x:
+    // most of that total is a baseline litestream pays once, not per database.
+    // The ceiling on the default 916 MB instance is therefore around two
+    // thousand apps rather than a few hundred — still far nearer than any cost
+    // ceiling, which is why this alarm exists. Until it did, the number could
+    // only be had by opening an SSM session and running `ps` by hand, which is
+    // to say it was never had at all.
     //
     // NOT treatMissingData.BREACHING, unlike its neighbours: missing data here
     // means the heartbeat stopped, and the heartbeat alarm already says so

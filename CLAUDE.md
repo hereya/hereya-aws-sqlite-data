@@ -161,6 +161,38 @@ Alarm `${stackName}-memory-headroom` fires under `memoryHeadroomBytes` (default
 150 MB). It is `notBreaching` on missing data, unlike its neighbours: silence
 here means the heartbeat stopped, and that alarm already pages — two alerts for
 one incident is noise, and noise is how alarms get ignored.
+## Load harness + the memory model (2026-08-24, `scripts/loadtest.mjs`)
+
+```
+node scripts/loadtest.mjs --n 500,1000,2500 --replica s3://bucket/prefix
+```
+
+Two phases per tier, and **the order is the whole point**: `seed` creates N
+databases and lets them replicate, `restore` deletes the local files and boots
+again. Only the second measures restoration — booting N empty databases runs
+`initFreshDb`, never touches the replica, and yields a fast meaningless number.
+That is the easiest way to get this test wrong.
+
+**Measured (darwin/arm64, `file://` replicas, N = 20/50/200/500/1000):**
+
+    RSS ≈ 65 MB + 0.268 MB per database
+
+The marginal cost **falls** as N grows (0.450 → 0.411 → 0.293 → 0.222 MB/db).
+No knee up to 1000; the curve is sub-linear.
+
+⚠ **This corrected an earlier projection, and the mistake is worth remembering.**
+The 2026-08-24 prod reading (56.9 MB for 61 databases) was divided to give
+"0.93 MB per database" — but most of that is a **fixed baseline litestream pays
+once, not 61 times**. Dividing a total by a count, when the total has a large
+constant term, overstates the marginal cost by ~3.4×. The resulting projection
+(9.3 GB at 10k apps, a wall at 250-600 apps) was far too pessimistic; the model
+above gives ~2.7 GB and roughly 2000 apps of headroom on the default instance.
+
+Still open, and why the harness takes `--replica s3://`: this was measured with
+`file://` replicas on macOS. The **S3 client may hold per-database state that the
+file backend does not**, so the real slope could be higher. Restore *timing* from
+a local run transfers to nothing — 2-5 ms/app here against ~1150 ms/app in prod,
+which is S3 latency, not work.
 
 ## Connector-track interfaces (implemented)
 
