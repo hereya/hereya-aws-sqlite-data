@@ -17,6 +17,18 @@ parameters:
     description: "Chat id Telegram prévenu quand une alarme bascule (et quand elle se rétablit). DOIT être fourni avec telegramBotTokenParam — les deux conditionnent la création du relais."
     mandatory: false
     default: ""
+  litestreamL0RetentionCheckInterval:
+    description: "Cadence du balayage de rétention L0 (défaut '15s' = le défaut de litestream). Litestream lance ce balayage comme un minuteur FIXE par base, qu'elle ait été écrite ou non, et chaque tic LISTe la réplique S3 : c'est le premier poste de la facture de requêtes S3 (mesure du 24/08 : 16,5 M de ListBucket = 82,60 $ sur 24 jours, contre 0,25 $ de PutObject). NE TOUCHE PAS à la fenêtre de perte, qui est portée par litestreamSyncIntervalMs seul — ralentir ce balayage ne coûte qu'une restauration un peu plus lente."
+    mandatory: false
+    default: "15s"
+  litestreamL0Retention:
+    description: "Durée pendant laquelle un fichier L0 déjà compacté en L1 est conservé dans la réplique avant suppression (défaut '5m' = le défaut de litestream). À garder confortablement au-dessus de l'intervalle L1 : un L0 supprimé avant sa compaction serait une perte de données. Doit être une durée litestream ('30m', '1h'…) — une valeur malformée fait échouer le démarrage du service plutôt que d'être ignorée en silence par litestream."
+    mandatory: false
+    default: "5m"
+  litestreamLevelIntervals:
+    description: "Intervalles de compaction des niveaux 1..N, séparés par des virgules et dans l'ordre croissant (défaut '30s,5m,1h' = les défauts de litestream). Mêmes propriétés que litestreamL0RetentionCheckInterval : minuteurs fixes par base, indépendants des écritures, un LIST par tic, sans effet sur la fenêtre de perte. Chaque niveau doit être strictement plus lent que le précédent, sinon le service refuse de démarrer."
+    mandatory: false
+    default: "30s,5m,1h"
   amiId:
     description: "AMI of the database VM. Pinned by default to a specific AL2023 arm64 image of eu-west-1, so that an ordinary deploy NEVER replaces the instance (a replacement = ~60s with no Data API for every org). Bump the pin — in lib/hereya-aws-sqlite-data-stack.ts — or pass an id here to move the OS deliberately. 'latest' restores auto-resolution of the newest AL2023 arm64 image at every deploy (and with it the surprise replacement); outside eu-west-1, 'latest' or a region-local id is required."
     mandatory: false

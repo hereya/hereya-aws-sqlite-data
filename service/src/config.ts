@@ -30,6 +30,19 @@ export interface Config {
   litestreamSyncIntervalMs: number;
   litestreamRetention: string;
   litestreamSnapshotInterval: string;
+  /** Housekeeping cadences. These drive the S3 REQUEST bill, not durability:
+   *  litestream runs each of them as a FIXED timer per database, whether or not
+   *  that database was written to, and each tick LISTs the replica prefix. The
+   *  loss window on a brutal VM death is set by `sync-interval` alone — these
+   *  only change how promptly L0 files are merged and swept, i.e. restore
+   *  speed. Measured 2026-08-24: at the litestream defaults (L0 sweep 15s, L1
+   *  30s, L2 5m, L3 1h) the fleet billed 16.5M ListBucket calls in 24 days
+   *  (82.60 USD) against 50k PutObject (0.25 USD) — 99.7% of the S3 request
+   *  bill was looking, not writing. */
+  litestreamL0Retention: string;
+  litestreamL0RetentionCheckInterval: string;
+  /** Compaction intervals for levels 1..N, in order (yaml `levels[].interval`). */
+  litestreamLevelIntervals: string[];
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;
@@ -44,6 +57,38 @@ export interface Config {
   capabilityEnforce: boolean;
 }
 
+/**
+ * Compaction level intervals, as a comma-separated list ordered L1, L2, …
+ * Each level must be strictly slower than the one below it — litestream
+ * compacts upwards, so an inverted pair would have a level repeatedly
+ * recompacting what it already holds. Empty/unset keeps the defaults.
+ */
+export function parseLevelIntervals(raw: string | undefined, fallback: string[]): string[] {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s !== "");
+  if (parts.length === 0) return fallback;
+  const ms: number[] = [];
+  for (const p of parts) {
+    const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/.exec(p);
+    if (!m) {
+      throw new Error(`invalid LITESTREAM_LEVEL_INTERVALS entry: ${p} (expected a duration such as 5m)`);
+    }
+    const unit = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[m[2] as "ms" | "s" | "m" | "h"];
+    ms.push(Number(m[1]) * unit);
+  }
+  for (let i = 1; i < ms.length; i += 1) {
+    if (ms[i]! <= ms[i - 1]!) {
+      throw new Error(
+        `invalid LITESTREAM_LEVEL_INTERVALS: ${raw} (level ${i + 1} must be slower than level ${i})`,
+      );
+    }
+  }
+  return parts;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // port 0 is valid (ephemeral, used by tests); negatives and garbage are not
   function intEnv(name: string, fallback: number): number {
@@ -54,6 +99,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       throw new Error(`invalid ${name}: ${raw}`);
     }
     return n;
+  }
+
+  // Litestream's config parser is NON-STRICT: a malformed duration is not an
+  // error, it silently falls back to the built-in default — which is exactly
+  // the failure this whole setting exists to avoid (we would keep paying the
+  // 15s/30s bill while believing we had slowed it down). So the durations are
+  // validated HERE, at boot, where a typo is loud.
+  function durationEnv(name: string, fallback: string): string {
+    const raw = env[name];
+    if (raw === undefined || raw === "") return fallback;
+    const v = raw.trim();
+    if (!/^\d+(\.\d+)?(ms|s|m|h)$/.test(v)) {
+      throw new Error(`invalid ${name}: ${raw} (expected a litestream duration such as 5m, 30s, 1h)`);
+    }
+    return v;
   }
 
   const registryMode = (env.REGISTRY_MODE ?? "ddb") as Config["registryMode"];
@@ -87,6 +147,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     litestreamSyncIntervalMs: intEnv("LITESTREAM_SYNC_INTERVAL_MS", 1000),
     litestreamRetention: env.LITESTREAM_RETENTION ?? "72h",
     litestreamSnapshotInterval: env.LITESTREAM_SNAPSHOT_INTERVAL ?? "6h",
+    // Defaults reproduce litestream 0.5.14's own built-ins verbatim, so that
+    // shipping this code changes NOTHING until the intervals are set
+    // deliberately (the saving is a separate, explicit decision).
+    litestreamL0Retention: durationEnv("LITESTREAM_L0_RETENTION", "5m"),
+    litestreamL0RetentionCheckInterval: durationEnv("LITESTREAM_L0_RETENTION_CHECK_INTERVAL", "15s"),
+    litestreamLevelIntervals: parseLevelIntervals(env.LITESTREAM_LEVEL_INTERVALS, ["30s", "5m", "1h"]),
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",
