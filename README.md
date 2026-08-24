@@ -93,9 +93,18 @@ also proves the 1 s replication loop does **not** list: if it did, it alone woul
 The consequence is worth stating plainly, because it inverts the obvious move: **raising
 `litestreamSyncIntervalMs` buys almost nothing and costs durability**, while slowing the
 housekeeping intervals buys nearly all of it and costs only restore speed — the loss window on a
-brutal VM death stays exactly `litestreamSyncIntervalMs`. Keep `litestreamL0Retention`
-comfortably above the level-1 interval: an L0 file deleted before it is compacted into L1 *is*
-data loss. Litestream's own config parsing is non-strict, so a key it does not recognise is
+brutal VM death stays exactly `litestreamSyncIntervalMs`.
+
+**One combination here loses DATA rather than money, and the service refuses to boot on it.**
+`litestreamL0Retention` must be at least **2x** the level-1 interval: a transaction lands in L0
+first and may only be swept once level 1 has merged it, so a shorter retention deletes writes that
+were never copied anywhere else — and nothing reports it, since litestream keeps replicating and
+every metric stays green until the day someone restores. Equal is not enough either: a file written
+just after a compaction waits nearly a full interval for the next one, so an equal retention races
+with it. The pair is easy to get wrong *by accident* precisely because the two values are tuned for
+opposite reasons — slowing compaction is what saves the money, and the retention is the one you
+forget to move with it. Hence `assertL0RetentionCoversL1` at boot rather than this paragraph: a
+README cannot fail a deploy. Litestream's own config parsing is non-strict, so a key it does not recognise is
 dropped in silence and the built-in default applies — which is why the service validates these
 durations at boot and refuses to start on a malformed one, and why the test suite asserts
 against the running daemon's reported intervals rather than merely against a config that parses.

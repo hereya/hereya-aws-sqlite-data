@@ -57,6 +57,27 @@ export interface Config {
   capabilityEnforce: boolean;
 }
 
+/** A litestream duration (`5m`, `30s`, `1h`, `250ms`) in milliseconds, or null. */
+export function durationToMs(value: string): number | null {
+  const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/.exec(value.trim());
+  if (!m) return null;
+  const unit = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[m[2] as "ms" | "s" | "m" | "h"];
+  return Number(m[1]) * unit;
+}
+
+/**
+ * How many times longer an L0 file must be RETAINED than the level-1 compaction
+ * interval. Not a style preference — the boundary between a saving and data
+ * loss. L0 is where a transaction lands first; it may only be swept once it has
+ * been merged into L1. A file written just after a compaction waits nearly a
+ * full interval for the next one, and that compaction takes time itself, so a
+ * retention merely EQUAL to the interval races with it. Two full cycles is the
+ * cheapest margin that is obviously sufficient — and it costs nothing, since
+ * the entire replica's storage bills 0.78 USD/month against 82.60 USD of
+ * requests.
+ */
+export const MIN_L0_RETENTION_RATIO = 2;
+
 /**
  * Compaction level intervals, as a comma-separated list ordered L1, L2, …
  * Each level must be strictly slower than the one below it — litestream
@@ -72,12 +93,11 @@ export function parseLevelIntervals(raw: string | undefined, fallback: string[])
   if (parts.length === 0) return fallback;
   const ms: number[] = [];
   for (const p of parts) {
-    const m = /^(\d+(?:\.\d+)?)(ms|s|m|h)$/.exec(p);
-    if (!m) {
+    const v = durationToMs(p);
+    if (v === null) {
       throw new Error(`invalid LITESTREAM_LEVEL_INTERVALS entry: ${p} (expected a duration such as 5m)`);
     }
-    const unit = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[m[2] as "ms" | "s" | "m" | "h"];
-    ms.push(Number(m[1]) * unit);
+    ms.push(v);
   }
   for (let i = 1; i < ms.length; i += 1) {
     if (ms[i]! <= ms[i - 1]!) {
@@ -87,6 +107,37 @@ export function parseLevelIntervals(raw: string | undefined, fallback: string[])
     }
   }
   return parts;
+}
+
+/**
+ * The one combination of these settings that loses DATA rather than money.
+ *
+ * Every other knob here trades cost against restore speed. This pair does not:
+ * a transaction lands in L0 first and is only safe to sweep once level 1 has
+ * merged it, so an `l0-retention` shorter than the level-1 interval deletes
+ * transactions that were never copied anywhere else. Nothing would report it —
+ * litestream keeps replicating happily, every metric stays green, and the loss
+ * only surfaces the day someone actually restores.
+ *
+ * It is easy to reach by accident precisely because the two values are tuned
+ * for opposite reasons: slowing compaction is what saves the money, and the
+ * retention is the number one forgets to move with it. Hence a boot-time
+ * refusal rather than a line of documentation — the README already said it, and
+ * a README cannot fail a deploy.
+ */
+export function assertL0RetentionCoversL1(l0Retention: string, levelIntervals: string[]): void {
+  const retentionMs = durationToMs(l0Retention);
+  const l1 = levelIntervals[0];
+  if (retentionMs === null || l1 === undefined) return;
+  const l1Ms = durationToMs(l1);
+  if (l1Ms === null) return;
+  if (retentionMs < l1Ms * MIN_L0_RETENTION_RATIO) {
+    throw new Error(
+      `invalid LITESTREAM_L0_RETENTION: ${l0Retention} is not safely longer than the level-1 ` +
+        `compaction interval ${l1} — an L0 file swept before it is compacted into L1 is LOST data. ` +
+        `Use at least ${MIN_L0_RETENTION_RATIO}x the level-1 interval.`,
+    );
+  }
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -120,6 +171,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (registryMode !== "file" && registryMode !== "ddb") {
     throw new Error(`invalid REGISTRY_MODE: ${env.REGISTRY_MODE}`);
   }
+
+  const l0Retention = durationEnv("LITESTREAM_L0_RETENTION", "5m");
+  const levelIntervals = parseLevelIntervals(env.LITESTREAM_LEVEL_INTERVALS, ["30s", "5m", "1h"]);
+  assertL0RetentionCoversL1(l0Retention, levelIntervals);
+
   return {
     port: intEnv("PORT", 8080),
     dbDir: env.DB_DIR ?? "/var/lib/dilaya/dbs",
@@ -150,9 +206,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // Defaults reproduce litestream 0.5.14's own built-ins verbatim, so that
     // shipping this code changes NOTHING until the intervals are set
     // deliberately (the saving is a separate, explicit decision).
-    litestreamL0Retention: durationEnv("LITESTREAM_L0_RETENTION", "5m"),
+    litestreamL0Retention: l0Retention,
     litestreamL0RetentionCheckInterval: durationEnv("LITESTREAM_L0_RETENTION_CHECK_INTERVAL", "15s"),
-    litestreamLevelIntervals: parseLevelIntervals(env.LITESTREAM_LEVEL_INTERVALS, ["30s", "5m", "1h"]),
+    litestreamLevelIntervals: levelIntervals,
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",

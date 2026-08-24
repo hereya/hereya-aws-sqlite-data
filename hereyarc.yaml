@@ -22,7 +22,7 @@ parameters:
     mandatory: false
     default: "15s"
   litestreamL0Retention:
-    description: "Durée pendant laquelle un fichier L0 déjà compacté en L1 est conservé dans la réplique avant suppression (défaut '5m' = le défaut de litestream). À garder confortablement au-dessus de l'intervalle L1 : un L0 supprimé avant sa compaction serait une perte de données. Doit être une durée litestream ('30m', '1h'…) — une valeur malformée fait échouer le démarrage du service plutôt que d'être ignorée en silence par litestream."
+    description: "Durée pendant laquelle un fichier L0 déjà compacté en L1 est conservé dans la réplique avant suppression (défaut '5m' = le défaut de litestream). SEUL réglage de cette famille qui coûte des DONNÉES et pas de l'argent : une transaction atterrit d'abord en L0 et ne peut être balayée qu'une fois fusionnée en L1, donc une rétention trop courte supprime des écritures jamais recopiées ailleurs — sans que rien ne le signale, litestream continuant de répliquer normalement jusqu'au jour d'une restauration. Le service EXIGE donc au moins 2x l'intervalle du niveau 1 et refuse de démarrer en dessous (égal ne suffit pas : un fichier écrit juste après une compaction attend presque un intervalle entier, donc il y aurait course). Piège fréquent parce que les deux valeurs se règlent pour des raisons opposées : ralentir la compaction est ce qui économise, et la rétention est celle qu'on oublie de déplacer avec."
     mandatory: false
     default: "5m"
   litestreamLevelIntervals:
