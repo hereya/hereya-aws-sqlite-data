@@ -12,12 +12,17 @@ export const METRIC_NAME = "Heartbeat";
 export const METRIC_LITESTREAM_RSS = "LitestreamRssBytes";
 export const METRIC_MEMORY_AVAILABLE = "MemoryAvailableBytes";
 export const METRIC_SERVED_APPS = "ServedApps";
+/** Apps litestream actually watches. Below ServedApps by the number never
+ *  written — the gap IS the saving, so it has to be visible. */
+export const METRIC_REPLICATED_APPS = "ReplicatedApps";
 
 export interface CapacitySource {
   /** Pid of the litestream process, or null when none is running. */
   litestreamPid: () => number | null;
   /** How many app databases this instance is currently serving. */
   servedApps: () => number;
+  /** How many of those litestream actually replicates. */
+  replicatedApps?: () => number;
   /** Where to read /proc from. Injectable so the publishing path can be tested
    *  against a fixture instead of the host's real /proc — which does not exist
    *  on macOS, where these tests are usually run. */
@@ -79,6 +84,14 @@ export class Heartbeat {
       Unit: "Count",
       Value: this.capacity.servedApps(),
     });
+    if (this.capacity.replicatedApps !== undefined) {
+      data.push({
+        MetricName: METRIC_REPLICATED_APPS,
+        Dimensions: dimensions,
+        Unit: "Count",
+        Value: this.capacity.replicatedApps(),
+      });
+    }
     return data;
   }
 

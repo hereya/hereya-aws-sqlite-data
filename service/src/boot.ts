@@ -119,6 +119,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   const heartbeat = new Heartbeat(cfg, () => litestream.healthy, undefined, {
     litestreamPid: () => litestream.childPid,
     servedApps: () => sync.servedApps.length,
+    replicatedApps: () => sync.replicatedApps.length,
   });
   heartbeat.start();
 

@@ -132,6 +132,42 @@ replication on its own — confirmed by 30 min of prod journal with a single `re
 no exit. Real creation rate: 61 apps over 51 days, peak 15 in one day = ~15s of cumulative
 replication pause on the worst day.
 
+## An app that has never been written is NOT replicated (2026-08-24)
+
+`AppSync` keeps two sets: **`served`** (can answer queries) and **`replicated`**
+(a SUBSET — what litestream actually watches, i.e. what `buildConfig` is given).
+
+`restoreIfMissing` already reported `"existing" | "restored" | "fresh"`, and all
+three callers threw the value away. `"fresh"` means **no replica exists**, i.e.
+nobody ever wrote to this database. Such an app is now served but left OUT of the
+config: no timer set, no LIST on every tick, **no OS thread**, no ~0.46 MB of RSS.
+
+**Why this is safe, and why it is NOT the same as evicting an idle app:** a
+`fresh` app holds **no data**. There is nothing to lose by not replicating it.
+Evicting an app that HAS data is a separate, genuinely risky design (a write
+arriving on an unreplicated app would be acknowledged and lost) — that one is
+still unbuilt on purpose.
+
+**The promotion gate.** `ensureServed` promotes on first touch, and
+`server.ts authorize()` calls it **before any statement runs** on every data
+route — so no acknowledged write can precede replication. Promotion does NOT
+re-restore (the local file is already the truth; restoring over it is exactly the
+stale-data trap invariant 2 forbids), it only adds the app to the config and
+bounces. A failed promotion rolls back only what it added, so an already-serving
+app never stops serving because a bounce failed.
+
+Consequence, which is the point: **an app created and never touched costs
+nothing at all** — no euros, no memory, no threads. That closes the abuse vector
+(10 000 empty apps are free) and pushes back the per-process thread ceiling.
+
+`ReplicatedApps` is published beside `ServedApps`; the **gap between them is the
+saving**, so it has to be visible. `boot-restore-complete` also carries
+`replicated` and `unusedSkipped`.
+
+⚠ An app that is only ever READ is promoted too — the gate is deliberately
+conservative. Classifying SQL to promote on writes only would make a
+misclassification a data-loss bug; over-promoting merely costs a few timers.
+
 ## Capacity telemetry (2026-08-24, `service/src/capacity.ts`)
 
 The heartbeat answers "is it alive". These answer the question that arrives
