@@ -215,6 +215,24 @@ test("cloud map deregister-on-delete guards the service deletion", () => {
   assert.notEqual(JSON.stringify(dereg!.Resource), '"*"', "DeregisterInstance must be service-scoped");
 });
 
+test("the write-stats grant cannot touch org rows", () => {
+  // The registry is what the double control reads to decide who may reach what.
+  // Granting the data plane a blanket UpdateItem on it would be a real widening
+  // of blast radius; the condition pins the write to one fixed partition.
+  const policies = template.findResources("AWS::IAM::Policy");
+  const stmts = Object.values(policies).flatMap(
+    (p) => (p.Properties.PolicyDocument.Statement ?? []) as unknown[],
+  ) as Array<{ Sid?: string; Action?: unknown; Condition?: Record<string, Record<string, string[]>> }>;
+  const grant = stmts.find((st) => st.Sid === "WriteStats");
+  assert.ok(grant, "the WriteStats grant must exist");
+  assert.deepEqual(grant.Action, "dynamodb:UpdateItem", "write, and nothing else");
+  assert.deepEqual(
+    grant.Condition?.["ForAllValues:StringEquals"]?.["dynamodb:LeadingKeys"],
+    ["_writestats"],
+    "scoped to the fixed partition — never an org's rows",
+  );
+});
+
 test("memory headroom is alarmed — the ceiling on how many apps fit", () => {
   // litestream grows ~1 MB of RSS per database on a 916 MB instance, so memory
   // is what limits app count. Before 2026-08-24 nothing watched it.

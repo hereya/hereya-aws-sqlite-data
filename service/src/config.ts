@@ -62,6 +62,10 @@ export interface Config {
    *  unreachable for EVERY org until it ends — and it grows linearly with apps
    *  sold: ~1.15 s/app serially would be ~19 min at 1000 apps. */
   bootRestoreConcurrency: number;
+  /** How often per-app write stats are persisted, ms. The hot path only
+   *  touches memory; this is the cost of making that memory survive an
+   *  instance replacement. 0 disables persistence entirely. */
+  writeStatsFlushMs: number;
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;
@@ -242,6 +246,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     litestreamL0RetentionCheckInterval: durationEnv("LITESTREAM_L0_RETENTION_CHECK_INTERVAL", "30m"),
     litestreamLevelIntervals: levelIntervals,
     bootRestoreConcurrency: bootRestoreConcurrency,
+    writeStatsFlushMs: intEnv("WRITE_STATS_FLUSH_MS", 300_000),
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",

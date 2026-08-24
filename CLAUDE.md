@@ -132,6 +132,48 @@ replication on its own — confirmed by 30 min of prod journal with a single `re
 no exit. Real creation rate: 61 apps over 51 days, peak 15 in one day = ~15s of cumulative
 replication pause on the worst day.
 
+## Per-app write recency (2026-08-24, `service/src/write-stats.ts`)
+
+The number every remaining optimisation waits on: the eviction threshold, which
+apps belong on a slow-cadence litestream process, and the anti-abuse creation
+limit all need the **distribution** of write-idleness per app — not its average.
+
+**Why it could not be read from the replica bucket.** Every VM roll makes
+litestream snapshot each database, stamping a fresh L0 file and flooring the
+signal at "last boot". On 2026-08-24 four rolls in one day erased it four times:
+58 of 61 apps showed a last write inside the same two-minute window, twenty-five
+minutes after a deploy. Waiting for a quiet week is betting against our own
+release rhythm.
+
+**The VM is the only place this can be counted.** A per-app frontend Lambda
+writes to the Data API directly with its own capability token, so the connector
+never sees those statements — they all land here.
+
+Three constraints, in order:
+
+1. **It sits on the write path, so it must never be able to fail a customer's
+   write.** The hot path is a single `Map.set` — no I/O, no await, nothing that
+   can throw. Persistence runs on a background timer
+   (`WRITE_STATS_FLUSH_MS`, default 5 min); a failed flush costs resolution,
+   never data, and the entry stays pending for the next one.
+2. **It must survive instance replacement** — the exact thing the S3 timestamps
+   did not. Seeded from DynamoDB at boot; a clean shutdown flushes first.
+3. **It must not widen what the data plane can reach.** Rows live in a fixed
+   **`_writestats` partition** of the registry table (the `_hosts`/`_catalog`
+   trick — org ids are UUIDs, so the literal cannot collide), and the instance
+   role's grant is `UpdateItem` **conditioned on `dynamodb:LeadingKeys`**. The
+   VM still cannot touch a single org or app row — which matters, because the
+   registry is what the double control reads. `test/stack.test.ts` pins that
+   condition.
+
+**"A write" means the statement CHANGED the database** (`info.changes > 0`) —
+deliberately the same definition litestream reacts to. A statement touching zero
+rows produces no LTX and costs no replication, so counting it would measure
+something other than what we are pricing.
+
+Only entries that **moved** are flushed, so the write cost follows real activity
+rather than the number of apps hosted.
+
 ## An app that has never been written is NOT replicated (2026-08-24)
 
 `AppSync` keeps two sets: **`served`** (can answer queries) and **`replicated`**

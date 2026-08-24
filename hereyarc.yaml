@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.22
+version: 0.1.23
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -33,6 +33,10 @@ parameters:
     description: "Nombre d'apps restaurées en parallèle au démarrage de la VM (défaut 8, plage 1..64). Réglage de DISPONIBILITÉ, pas de coût : l'invariant « restaurer avant de servir » est intact — toutes les apps sont restaurées avant que le port ne soit ouvert — mais toute cette fenêtre est une panne totale, aucune org ne peut lire ni écrire jusqu'à sa fin, et elle croît linéairement avec le nombre d'apps vendues. Mesuré en prod le 24/08/2026 : 61 apps restaurées EN SÉRIE en 72 s, dont 54 écarts d'exactement 1 s et un seul de 14 s — une seule org porte 1320 Mo sur les 1352 Mo de la flotte. La fenêtre est donc à ~80 % des frais fixes par app (un sous-processus litestream + des allers-retours S3) payés sur des bases quasi vides : elle est bornée par la LATENCE, pas par le débit, et c'est exactement le cas où la concurrence rend un gain quasi linéaire. Chaque restauration étant un sous-processus, la valeur est bornée : la VM par défaut est une t4g.micro (916 Mo de RAM), ne pas monter ce nombre sans mesurer la mémoire."
     mandatory: false
     default: "8"
+  writeStatsFlushMs:
+    description: "Cadence de persistance des statistiques d'écriture par app, en millisecondes (défaut 300000, soit 5 min ; 0 désactive). Le chemin d'écriture ne touche QUE la mémoire — ce réglage est le prix à payer pour que cette mémoire survive au remplacement d'une instance. Seules les apps qui ont réellement écrit depuis le dernier envoi sont persistées, donc le coût suit l'activité réelle et non le nombre d'apps hébergées. Ces chiffres débloquent l'éviction des apps inactives, le tri chaud/froid et la limite de cadence anti-abus : ils ne se lisent pas depuis le seau de répliques, parce qu'un roulement de VM y remet l'horloge de toutes les bases à zéro (quatre fois le 24/08/2026)."
+    mandatory: false
+    default: "300000"
   memoryHeadroomBytes:
     description: "Seuil d'alerte sur la mémoire disponible de la VM des bases, en octets (défaut 157286400, soit 150 Mo). C'est le plafond RÉEL du nombre d'apps qu'une instance peut tenir : litestream coûte environ 0,27 Mo de mémoire par base au-delà d'un socle fixe de ~65 Mo (mesuré de 20 à 1000 bases le 24/08/2026 avec scripts/loadtest.mjs ; la première lecture, 56,9 Mo divisés par 61, donnait « 0,93 Mo par base » et surestimait le coût marginal d'un facteur 3,4 — l'essentiel de ce total est un socle payé UNE fois) et l'instance par défaut n'a que 916 Mo — le mur est la mémoire, et il arrive bien avant n'importe quelle facture. Avant cette version, ce chiffre ne s'obtenait qu'en ouvrant une session SSM et en tapant `ps` à la main, autant dire jamais. L'alarme ne se déclenche PAS sur données manquantes, contrairement à ses voisines : une absence ici veut dire que le battement s'est arrêté, et l'alarme de battement le dit déjà — deux alertes pour un seul incident, c'est du bruit. Monter le seuil si l'instance est plus grosse."
     mandatory: false

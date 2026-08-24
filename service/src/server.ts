@@ -28,6 +28,9 @@ export interface ServerDeps {
   quota?: DbQuotaGuard;
   /** Restore-before-first-query hook (hot-add); absent in bare-core tests. */
   ensureServed?: (orgId: string, appId: string) => Promise<void>;
+  /** Records that a statement changed this app's database. Synchronous and
+   *  never throws — it runs inside every customer write. */
+  recordWrite?: (orgId: string, appId: string, changed: number) => void;
   onAdminSync?: () => Promise<{ added: number; removed: number }>;
   /** Teardown hook for POST /admin/delete-app (connector drop-app flow). */
   onDeleteApp?: (orgId: string, appId: string) => Promise<void>;
@@ -167,6 +170,9 @@ export function buildServer(deps: ServerDeps): Server {
         cfg.sqlTimeoutMs,
       );
       if (useTx) txRegistry.use(q.transactionId!, appKey); // refresh idle deadline after a long statement
+      // "changed the database" is the same definition litestream reacts to —
+      // a statement touching zero rows produces no LTX and costs no replication.
+      deps.recordWrite?.(q.orgId, q.appId, result.numberOfRecordsUpdated);
       return result;
     } finally {
       limiter.release(appKey);
@@ -201,6 +207,7 @@ export function buildServer(deps: ServerDeps): Server {
           cfg.sqlTimeoutMs,
         );
         updateResults.push({ numberOfRecordsUpdated: result.numberOfRecordsUpdated });
+        deps.recordWrite?.(q.orgId, q.appId, result.numberOfRecordsUpdated);
       }
       return { updateResults };
     } finally {

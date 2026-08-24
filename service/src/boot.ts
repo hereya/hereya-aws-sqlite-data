@@ -13,6 +13,7 @@ import { DdbRegistry, FileRegistry, type Registry } from "./registry.ts";
 import { buildServer } from "./server.ts";
 import { Shutdown } from "./shutdown.ts";
 import { AppSync } from "./sync.ts";
+import { WriteStats } from "./write-stats.ts";
 import { TxRegistry } from "./tx.ts";
 import { assertVecLoadable } from "./vec.ts";
 import { resolveWorkerPath, WorkerPool } from "./worker-host.ts";
@@ -61,6 +62,20 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   const limiter = new Limiter({ maxPerApp: cfg.maxInflightPerApp, maxTotal: cfg.maxInflightTotal });
   const sync = new AppSync(registry, manager, litestream, cfg.bootRestoreConcurrency);
   const quota = new DbQuotaGuard({ dbDir: cfg.dbDir, reader: createOrgQuotaReader(cfg) });
+  // Per-app write recency. Seeded from DynamoDB so an instance replacement does
+  // not reset the very history it exists to accumulate — that reset is exactly
+  // what made the replica-bucket timestamps unusable.
+  const writeStats = new WriteStats({
+    tableName: cfg.registryMode === "ddb" ? cfg.registryTable : "",
+    region: cfg.awsRegion,
+  });
+  try {
+    const loaded = await writeStats.load();
+    if (loaded > 0) console.log(JSON.stringify({ type: "write-stats", event: "loaded", apps: loaded }));
+  } catch (err) {
+    // Never fail a boot over a statistic.
+    console.error(JSON.stringify({ type: "write-stats", event: "load-failed", message: (err as Error).message }));
+  }
 
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
   const servedAtBoot = await sync.bootRestoreAll();
@@ -75,6 +90,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     limiter,
     quota,
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
+    recordWrite: (orgId, appId, changed) => writeStats.record(orgId, appId, changed),
     onAdminSync: () => sync.syncOnce(),
     onDeleteApp: (orgId, appId) => sync.removeApp(orgId, appId),
     health: () => ({ litestream: litestream.healthy ? "up" : "down", vec: vecVersion }),
@@ -116,6 +132,8 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   }, cfg.registryPollSeconds * 1000);
   poller.unref();
 
+  writeStats.start(cfg.writeStatsFlushMs);
+
   const heartbeat = new Heartbeat(cfg, () => litestream.healthy, undefined, {
     litestreamPid: () => litestream.childPid,
     servedApps: () => sync.servedApps.length,
@@ -140,6 +158,10 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
       clearInterval(sweeper);
       clearInterval(poller);
       heartbeat.stop();
+      // Flush before dying: a clean stop should not throw away the interval's worth
+      // of history it is holding.
+      writeStats.stop();
+      await writeStats.flush();
       await litestream.stop();
       await manager.closeAll();
       await new Promise<void>((resolve) => server.close(() => resolve()));
