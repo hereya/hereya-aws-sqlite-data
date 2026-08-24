@@ -180,6 +180,38 @@ That is the easiest way to get this test wrong.
 The marginal cost **falls** as N grows (0.450 → 0.411 → 0.293 → 0.222 MB/db).
 No knee up to 1000; the curve is sub-linear.
 
+### Measured for real on linux/arm64 (EC2, 2026-08-24) — the numbers that count
+
+`scripts/loadtest-ec2-userdata.sh` on a disposable r7g.xlarge, litestream alone,
+production cadence, empty WAL databases:
+
+| N | RSS (`file://`) | marginal MB/db |
+|---|---|---|
+| 500 | 209.9 MB | — |
+| 1000 | 364.6 MB | 0.309 |
+| 2500 | 907.5 MB | 0.362 |
+| 5000 | 1842.6 MB | 0.374 |
+| 10000 | **litestream did not survive** | — |
+
+    RSS ≈ 10 MB + 0.365 MB per database        (file://)
+    S3 backend costs +0.106 MB per database    (+25%, measured at N=500)
+    → the production slope is ~0.47 MB per database
+
+**Ceilings with the S3 backend:** t4g.micro (current) ≈ **1170 apps**, t4g.small
+≈ 4000, t4g.medium ≈ 8260. A 10 000-app target therefore fits on **no instance
+of this family** — the first hard number saying VM sharding is not optional.
+
+Two open items from that run, both harness faults now fixed in the script:
+**litestream died at 10000 databases** and the reason is unknown because only
+the shell trace was uploaded, not litestream's own log, and the instance then
+destroyed itself with the evidence (memory was NOT the constraint — 31 GB free;
+file descriptors are the leading hypothesis). And **the S3 tier at 2500 never
+plateaued** (2.2 GB → 0.8 GB across 75s), so the +25% figure rests on N=500 alone.
+
+⚠ **The macOS trend was an artifact.** There the marginal cost appeared to FALL
+with N; on linux/arm64 it rises. Small N on the wrong platform inverted the
+sign of the very thing being measured.
+
 ⚠ **This corrected an earlier projection, and the mistake is worth remembering.**
 The 2026-08-24 prod reading (56.9 MB for 61 databases) was divided to give
 "0.93 MB per database" — but most of that is a **fixed baseline litestream pays
