@@ -59,7 +59,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   });
   const manager = new AppManager(cfg, pool);
   const limiter = new Limiter({ maxPerApp: cfg.maxInflightPerApp, maxTotal: cfg.maxInflightTotal });
-  const sync = new AppSync(registry, manager, litestream);
+  const sync = new AppSync(registry, manager, litestream, cfg.bootRestoreConcurrency);
   const quota = new DbQuotaGuard({ dbDir: cfg.dbDir, reader: createOrgQuotaReader(cfg) });
 
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
