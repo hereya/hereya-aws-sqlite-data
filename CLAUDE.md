@@ -186,9 +186,9 @@ config: no timer set, no LIST on every tick, **no OS thread**, no ~0.46 MB of RS
 
 **Why this is safe, and why it is NOT the same as evicting an idle app:** a
 `fresh` app holds **no data**. There is nothing to lose by not replicating it.
-Evicting an app that HAS data is a separate, genuinely risky design (a write
-arriving on an unreplicated app would be acknowledged and lost) — that one is
-still unbuilt on purpose.
+Evicting an app that HAS data was a separate, genuinely risky design (a write
+arriving on an unreplicated app would be acknowledged and lost); it is now built
+on top of these same two sets — see "Evicting an IDLE app" below.
 
 **The promotion gate.** `ensureServed` promotes on first touch, and
 `server.ts authorize()` calls it **before any statement runs** on every data
@@ -209,6 +209,74 @@ saving**, so it has to be visible. `boot-restore-complete` also carries
 ⚠ An app that is only ever READ is promoted too — the gate is deliberately
 conservative. Classifying SQL to promote on writes only would make a
 misclassification a data-loss bug; over-promoting merely costs a few timers.
+
+## Evicting an IDLE app from replication (2026-08-24, `service/src/eviction.ts`)
+
+The section above ends with "evicting an app that HAS data is a separate,
+genuinely risky design — still unbuilt on purpose". This is that design, built.
+What made it tractable is that **the hard part was already there**: `served` vs
+`replicated` and the `ensureServed` promotion gate shipped with the
+never-written case, so eviction re-uses them rather than inventing anything.
+
+**Eviction means exactly one thing: the app leaves the litestream config.** It
+stays served, its file stays on disk, reads keep working with no wake-up, and
+the next statement puts it back through the same gate that every data route
+already awaits. Nothing is restored, closed or deleted.
+
+**Why it is safe to stop watching a database that HAS data.** The fear is
+stranding writes litestream had not yet shipped to S3 — and the THRESHOLD is
+what rules it out, not any new flushing machinery: replication runs on a ~1 s
+sync interval, and an app is only evictable after DAYS without a change. The
+eviction threshold is the flush guarantee. That is also why
+`EVICTION_IDLE_DAYS` defaults to **0 (off)** and is never inferred: an operator
+sets the number, or nothing is evicted.
+
+**Idleness comes from the write counter, and ignorance is not idleness.**
+`idleMs === null` (an app the counter has never seen change) is deliberately NOT
+evictable. Since the counter's history begins when it shipped, the feature
+therefore ships INERT: nothing can be evicted until real idleness has been
+observed for the full threshold. Evicting on `null` would have done the exact
+opposite — dropped the whole fleet on the first sweep, every app being unknown.
+
+### Two races found while building it, both silent-loss shaped
+
+Neither is visible from either side alone, and each is pinned by a test that was
+verified to FAIL without its fix (and only without its own fix):
+
+1. **A config write that disagrees with the set.** `bounce` rewrites the config
+   from a SNAPSHOT of `replicated`. Two callers overlapping — a request promoting
+   an app while the sweep or the registry poll bounces — let the later write land
+   a config computed before the earlier change, leaving an app inside
+   `replicated` but absent from the file litestream reads: believed watched, in
+   fact unwatched. `AppSync.withConfig` now serializes **decide + mutate + bounce**
+   for every caller (promotion, eviction, removal, sync), so whoever writes last
+   computed it from the set as it stood under the lock. The eviction plan is
+   therefore computed INSIDE the lock — a plan made outside it can go stale in
+   the microseconds before it is applied.
+2. **The gap between `ensureServed` and the limiter.** The fast path returns
+   immediately when an app is already replicated, and `server.ts authorize()`
+   acquires the limiter slot only AFTERWARDS. In between, a statement is
+   authorised to write while `inFlight` is 0 and no tx is open — invisible to
+   every guard. A sweep landing there evicts a database that is about to be
+   written. Covered by `EVICT_TOUCH_GRACE_MS` (5 min): `ensureServed` stamps
+   `lastTouch` **before** its early return, and a recently-touched app is not a
+   candidate. Free, because the threshold it defers to is measured in days.
+
+Beyond those: an app with an **open transaction** is never evicted (a tx's
+statements never re-enter `ensureServed` — `use()` only touches the tx
+registry), nor is one **mid-promotion** (`pending` holds a request waiting to
+write). Every rule errs toward keeping an app replicated: over-replicating costs
+a timer and a thread, under-replicating costs a customer their data.
+
+**One bounce per sweep, and none when nothing is evictable.** A bounce suspends
+replication ~1 s for every other database on the VM (one litestream process), so
+a sweep that finds nothing must not touch the config — otherwise the whole fleet
+pays hourly for an empty result.
+
+⚠ Inherited from the promotion gate and worth restating: an app that is only ever
+READ is promoted back. Eviction therefore frees apps with **no traffic at all**,
+not merely no writes. Classifying SQL to promote on writes only would make a
+misclassification a data-loss bug; this stays the conservative side.
 
 ## Capacity telemetry (2026-08-24, `service/src/capacity.ts`)
 

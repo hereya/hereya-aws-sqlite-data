@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.23
+version: 0.1.24
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -37,6 +37,14 @@ parameters:
     description: "Cadence de persistance des statistiques d'écriture par app, en millisecondes (défaut 300000, soit 5 min ; 0 désactive). Le chemin d'écriture ne touche QUE la mémoire — ce réglage est le prix à payer pour que cette mémoire survive au remplacement d'une instance. Seules les apps qui ont réellement écrit depuis le dernier envoi sont persistées, donc le coût suit l'activité réelle et non le nombre d'apps hébergées. Ces chiffres débloquent l'éviction des apps inactives, le tri chaud/froid et la limite de cadence anti-abus : ils ne se lisent pas depuis le seau de répliques, parce qu'un roulement de VM y remet l'horloge de toutes les bases à zéro (quatre fois le 24/08/2026)."
     mandatory: false
     default: "300000"
+  evictionIdleDays:
+    description: "Nombre de jours sans ÉCRITURE au bout desquels une app sort de la configuration litestream (défaut 0, c'est-à-dire DÉSACTIVÉ). L'app reste servie : son fichier reste sur le disque, les lectures continuent sans le moindre réveil, et la première instruction qui la touche la remet sous réplication AVANT de s'exécuter (ensureServed, le même verrou que pour une app jamais écrite). Ce qu'on récupère est la ressource rare : un jeu de minuteurs par base, un LIST du préfixe de réplique à chaque tic, ~1 fil système et ~0,46 Mo de mémoire — et ce sont les FILS qui plafonnent le nombre d'apps qu'une VM peut tenir (~10 800 mesurés, recommandation 5 000), donc une app inerte pèse sur toutes les autres orgs. Le seuil n'est pas qu'un réglage économique, c'est la GARANTIE DE VIDANGE : la réplication tourne avec un intervalle de ~1 s, donc une app qui n'a pas changé depuis des jours ne peut avoir aucune écriture en attente. Le défaut est 0 parce que cette garantie ne doit jamais être déduite : un opérateur pose le chiffre, ou rien n'est évincé. Une app que le compteur d'écritures n'a JAMAIS vue changer n'est jamais évincée — l'absence de preuve n'est pas une preuve d'inactivité, et comme l'historique du compteur commence à son déploiement, rien ne peut être évincé avant que l'inactivité réelle n'ait été observée pendant tout le seuil."
+    mandatory: false
+    default: "0"
+  evictionSweepMs:
+    description: "Cadence du balayage d'éviction, en millisecondes (défaut 3600000, soit 1 h). Rien n'y est urgent : ce qu'il récupère s'accumule sur des jours. Un balayage qui n'évince rien n'écrit PAS la configuration — un redémarrage de litestream suspend ~1 s la réplication de toutes les autres bases (un seul processus), donc un balayage bavard taxerait la flotte entière pour rien."
+    mandatory: false
+    default: "3600000"
   memoryHeadroomBytes:
     description: "Seuil d'alerte sur la mémoire disponible de la VM des bases, en octets (défaut 157286400, soit 150 Mo). C'est le plafond RÉEL du nombre d'apps qu'une instance peut tenir : litestream coûte environ 0,27 Mo de mémoire par base au-delà d'un socle fixe de ~65 Mo (mesuré de 20 à 1000 bases le 24/08/2026 avec scripts/loadtest.mjs ; la première lecture, 56,9 Mo divisés par 61, donnait « 0,93 Mo par base » et surestimait le coût marginal d'un facteur 3,4 — l'essentiel de ce total est un socle payé UNE fois) et l'instance par défaut n'a que 916 Mo — le mur est la mémoire, et il arrive bien avant n'importe quelle facture. Avant cette version, ce chiffre ne s'obtenait qu'en ouvrant une session SSM et en tapant `ps` à la main, autant dire jamais. L'alarme ne se déclenche PAS sur données manquantes, contrairement à ses voisines : une absence ici veut dire que le battement s'est arrêté, et l'alarme de battement le dit déjà — deux alertes pour un seul incident, c'est du bruit. Monter le seuil si l'instance est plus grosse."
     mandatory: false

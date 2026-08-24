@@ -5,6 +5,7 @@ import type { Server } from "node:http";
 import type { Config } from "./config.ts";
 import { AppManager } from "./apps.ts";
 import { CloudMapRegistration } from "./cloudmap.ts";
+import { daysToMs } from "./eviction.ts";
 import { Heartbeat } from "./heartbeat.ts";
 import { Limiter } from "./limits.ts";
 import { Litestream } from "./litestream.ts";
@@ -134,6 +135,33 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   writeStats.start(cfg.writeStatsFlushMs);
 
+  // Eviction sweep: stop replicating apps that have not changed in days. Off
+  // unless EVICTION_IDLE_DAYS is set — see src/eviction.ts for why the
+  // threshold IS the safety argument, not just an economic one.
+  const evictionThresholdMs = daysToMs(cfg.evictionIdleDays);
+  let evictionSweep: NodeJS.Timeout | null = null;
+  if (evictionThresholdMs > 0 && cfg.evictionSweepMs > 0) {
+    const probe = {
+      idleMs: (key: string) => {
+        const [orgId, appId] = key.split("/") as [string, string];
+        return writeStats.idleMsFor(orgId, appId);
+      },
+      hasOpenTx: (key: string) => txRegistry.hasOpenTx(key),
+      inFlight: (key: string) => limiter.inFlight(key),
+    };
+    evictionSweep = setInterval(() => {
+      void sync.evictIdle(probe, evictionThresholdMs).catch((err) => {
+        // A sweep that fails changes nothing: the apps stay replicated, which
+        // is the safe side of this decision.
+        console.error(JSON.stringify({ type: "eviction", event: "sweep-failed", message: (err as Error).message }));
+      });
+    }, cfg.evictionSweepMs);
+    evictionSweep.unref();
+    console.log(
+      JSON.stringify({ type: "eviction", event: "enabled", idleDays: cfg.evictionIdleDays, sweepMs: cfg.evictionSweepMs }),
+    );
+  }
+
   const heartbeat = new Heartbeat(cfg, () => litestream.healthy, undefined, {
     litestreamPid: () => litestream.childPid,
     servedApps: () => sync.servedApps.length,
@@ -157,6 +185,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     stop: async () => {
       clearInterval(sweeper);
       clearInterval(poller);
+      if (evictionSweep) clearInterval(evictionSweep);
       heartbeat.stop();
       // Flush before dying: a clean stop should not throw away the interval's worth
       // of history it is holding.
