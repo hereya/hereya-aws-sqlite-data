@@ -132,6 +132,36 @@ replication on its own — confirmed by 30 min of prod journal with a single `re
 no exit. Real creation rate: 61 apps over 51 days, peak 15 in one day = ~15s of cumulative
 replication pause on the worst day.
 
+## Capacity telemetry (2026-08-24, `service/src/capacity.ts`)
+
+The heartbeat answers "is it alive". These answer the question that arrives
+BEFORE death — **"how many more apps fit"** — and nothing could answer it until
+now: the only way to read litestream's memory was an SSM session and `ps` by
+hand, which is to say it was never read.
+
+Three metrics in `Dilaya/SqliteData`, published on the heartbeat's own timer and
+in the same `PutMetricData` call: `LitestreamRssBytes`, `MemoryAvailableBytes`,
+`ServedApps`. Raw, never pre-divided — RSS-per-app is the interesting quantity,
+but a ratio computed on the box is a number nobody can re-slice; CloudWatch
+metric math divides at read time.
+
+**The two silences are opposite, and that is the whole design.** The `Heartbeat`
+datum is published ONLY when healthy (its absence *is* the alarm). The capacity
+data is published ALWAYS — the moment memory matters most is the moment the
+service is struggling, so gating it on health would hide the one event it exists
+to catch. `service/test/unit/heartbeat-capacity.test.ts` pins both directions.
+
+`MemAvailable`, not `MemFree`: MemFree looks alarming on any healthy Linux box
+because the page cache is doing its job. Every `/proc` read returns `null` rather
+than throwing — a bounce is ~1s during which the pid just read no longer exists,
+and a metrics probe must never be what takes the service down. `procRoot` is
+injectable so the publishing path is testable on macOS, which has no `/proc`.
+
+Alarm `${stackName}-memory-headroom` fires under `memoryHeadroomBytes` (default
+150 MB). It is `notBreaching` on missing data, unlike its neighbours: silence
+here means the heartbeat stopped, and that alarm already pages — two alerts for
+one incident is noise, and noise is how alarms get ignored.
+
 ## Connector-track interfaces (implemented)
 
 - `GET /stats?org_id&app_id → {dbSizeBytes}` — capability-gated usage endpoint; the connector's

@@ -215,9 +215,24 @@ test("cloud map deregister-on-delete guards the service deletion", () => {
   assert.notEqual(JSON.stringify(dereg!.Resource), '"*"', "DeregisterInstance must be service-scoped");
 });
 
+test("memory headroom is alarmed — the ceiling on how many apps fit", () => {
+  // litestream grows ~1 MB of RSS per database on a 916 MB instance, so memory
+  // is what limits app count. Before 2026-08-24 nothing watched it.
+  template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+    MetricName: "MemoryAvailableBytes",
+    Namespace: "Dilaya/SqliteData",
+    ComparisonOperator: "LessThanThreshold",
+    Statistic: "Minimum",
+    // NOT breaching on missing data: silence here means the heartbeat stopped,
+    // and the heartbeat alarm already pages for that. Two alarms for one
+    // incident is noise, and noise is how alarms get ignored.
+    TreatMissingData: "notBreaching",
+  });
+});
+
 test("every alarm notifies, in both directions", () => {
   const list = Object.values(template.findResources("AWS::CloudWatch::Alarm"));
-  assert.equal(list.length, 4);
+  assert.equal(list.length, 5);
   for (const alarm of list) {
     assert.ok((alarm.Properties.AlarmActions ?? []).length >= 1, "alarm must notify");
     assert.ok((alarm.Properties.OKActions ?? []).length >= 1, "recovery must notify too");

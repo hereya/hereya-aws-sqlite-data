@@ -440,6 +440,14 @@ exports.handler = async (event) => {
     // interdit ») ------------------------------------------------------------
     const alertTopic = new sns.Topic(this, "AlertTopic");
 
+    // Default 150 MB: on the default 916 MB instance that is roughly the point
+    // where ~150 more databases would no longer fit, i.e. enough warning to
+    // plan a bigger instance rather than discover the wall by hitting it.
+    const memoryHeadroomBytes = Number(input("memoryHeadroomBytes", "157286400"));
+    if (!Number.isFinite(memoryHeadroomBytes) || memoryHeadroomBytes <= 0) {
+      throw new Error(`invalid memoryHeadroomBytes: ${input("memoryHeadroomBytes", "157286400")}`);
+    }
+
     const heartbeatAlarm = new cloudwatch.Alarm(this, "HeartbeatAlarm", {
       alarmName: `${this.stackName}-heartbeat`,
       alarmDescription:
@@ -477,6 +485,40 @@ exports.handler = async (event) => {
     });
     capacityAlarm.addAlarmAction(new cwActions.SnsAction(alertTopic));
     capacityAlarm.addOkAction(new cwActions.SnsAction(alertTopic));
+
+    // Memory headroom. The two alarms above catch the VM being DEAD; this one
+    // catches it running out of room to grow, which is the failure that
+    // actually limits how many apps can be sold.
+    //
+    // Measured 2026-08-24: litestream holds ~0.93 MB of RSS per database, and
+    // the default instance has 916 MB — so the ceiling sits somewhere in the
+    // low hundreds of apps, far nearer than any cost ceiling. Until now that
+    // number could only be obtained by opening an SSM session and running `ps`
+    // by hand, which is to say it was never obtained at all.
+    //
+    // NOT treatMissingData.BREACHING, unlike its neighbours: missing data here
+    // means the heartbeat stopped, and the heartbeat alarm already says so
+    // loudly. Making this one breach too would turn one incident into two
+    // pages that say the same thing.
+    const memoryAlarm = new cloudwatch.Alarm(this, "MemoryHeadroomAlarm", {
+      alarmName: `${this.stackName}-memory-headroom`,
+      alarmDescription:
+        "Available memory on the Data API VM is low — litestream grows with the number of databases served, so this is the ceiling on how many apps this instance can hold",
+      metric: new cloudwatch.Metric({
+        namespace: "Dilaya/SqliteData",
+        metricName: "MemoryAvailableBytes",
+        dimensionsMap: { stack: this.stackName },
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(5),
+      }),
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      threshold: memoryHeadroomBytes,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    memoryAlarm.addAlarmAction(new cwActions.SnsAction(alertTopic));
+    memoryAlarm.addOkAction(new cwActions.SnsAction(alertTopic));
 
     // The registry table is the piece that says WHERE each customer database
     // lives, and it was the one thing on this stack nothing watched. The

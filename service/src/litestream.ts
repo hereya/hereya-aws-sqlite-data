@@ -151,6 +151,12 @@ export class Litestream {
     return this.childHealthy;
   }
 
+  /** Pid of the running replication process, for capacity sampling; null when
+   *  no child is up (disabled, no apps yet, or mid-bounce). */
+  get childPid(): number | null {
+    return this.child?.pid ?? null;
+  }
+
   async stop(): Promise<void> {
     this.stopping = true;
     await this.stopChild();
