@@ -359,9 +359,9 @@ exports.handler = async (event) => {
           LITESTREAM_RETENTION: input("litestreamRetention", "72h"),
           // Housekeeping cadence — the S3 REQUEST bill, not durability. See the
           // parameter docs in hereyarc.yaml.
-          LITESTREAM_L0_RETENTION: input("litestreamL0Retention", "5m"),
-          LITESTREAM_L0_RETENTION_CHECK_INTERVAL: input("litestreamL0RetentionCheckInterval", "15s"),
-          LITESTREAM_LEVEL_INTERVALS: input("litestreamLevelIntervals", "30s,5m,1h"),
+          LITESTREAM_L0_RETENTION: input("litestreamL0Retention", "3h"),
+          LITESTREAM_L0_RETENTION_CHECK_INTERVAL: input("litestreamL0RetentionCheckInterval", "30m"),
+          LITESTREAM_LEVEL_INTERVALS: input("litestreamLevelIntervals", "30m,2h,6h"),
           HEARTBEAT_ENABLED: "1",
           HEARTBEAT_DIMENSION: this.stackName,
           IMDS_ENABLED: "1",

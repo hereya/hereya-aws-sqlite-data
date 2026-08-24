@@ -40,12 +40,14 @@ test("buildConfig emits the 0.5.x schema (global snapshot, single replica)", () 
   assert.equal(
     yml,
     [
-      "l0-retention: 5m",
-      "l0-retention-check-interval: 15s",
+      // The shipped cadence (chosen 2026-08-24). NOT litestream's defaults —
+      // those are 15s/30s/5m/1h and billed 1.343 USD per app per month.
+      "l0-retention: 3h",
+      "l0-retention-check-interval: 30m",
       "levels:",
-      "  - interval: 30s",
-      "  - interval: 5m",
-      "  - interval: 1h",
+      "  - interval: 30m",
+      "  - interval: 2h",
+      "  - interval: 6h",
       "snapshot:",
       "  interval: 6h",
       "  retention: 72h",
@@ -223,3 +225,46 @@ test("the guard states the fix, not just the refusal", () => {
     assert.match(msg, /at least 2x/i, "states the rule");
   }
 });
+
+test(
+  "the real binary honours the SHIPPED cadence — the one prod actually runs",
+  { skip: !haveLitestream },
+  async () => {
+    // The test above proves the knobs work with arbitrary values. This one
+    // proves the values we actually ship are honoured, which is a different
+    // claim: a default that only LOOKS applied would keep the fleet on
+    // litestream's 15s/30s and nobody would notice, because the bill is the
+    // only symptom and it arrives a month later.
+    const dir = mkdtempSync(join(tmpdir(), "ls-shipped-"));
+    const dbPath = join(dir, "app.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA journal_mode=WAL");
+    db.exec("CREATE TABLE t(a)");
+    db.close();
+
+    const cfgPath = join(dir, "litestream.yml");
+    const cfg = makeLitestream().buildConfig([{ orgId: "org-a", appId: "app-1", dbPath }]);
+    writeFileSync(cfgPath, cfg.replace(/url: .*/, `url: file://${join(dir, "replica")}`));
+
+    const child = spawn(litestreamBin, ["replicate", "-config", cfgPath], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (c: Buffer) => (out += c.toString()));
+    child.stderr.on("data", (c: Buffer) => (out += c.toString()));
+    try {
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline && !/L0 retention monitor/.test(out)) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } finally {
+      child.kill("SIGKILL");
+    }
+
+    assert.match(out, /L0 retention monitor.*interval=30m0s retention=3h0m0s/);
+    assert.match(out, /compaction monitor.*level=1 interval=30m0s/);
+    assert.match(out, /compaction monitor.*level=2 interval=2h0m0s/);
+    assert.match(out, /compaction monitor.*level=3 interval=6h0m0s/);
+    // and NOT litestream's own defaults, which is the failure being guarded
+    assert.doesNotMatch(out, /L0 retention monitor.*interval=15s/);
+    assert.doesNotMatch(out, /compaction monitor.*level=1 interval=30s/);
+  },
+);

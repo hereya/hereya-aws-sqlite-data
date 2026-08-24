@@ -35,10 +35,13 @@ export interface Config {
    *  that database was written to, and each tick LISTs the replica prefix. The
    *  loss window on a brutal VM death is set by `sync-interval` alone — these
    *  only change how promptly L0 files are merged and swept, i.e. restore
-   *  speed. Measured 2026-08-24: at the litestream defaults (L0 sweep 15s, L1
-   *  30s, L2 5m, L3 1h) the fleet billed 16.5M ListBucket calls in 24 days
+   *  speed. Measured 2026-08-24: at litestream's OWN defaults (L0 sweep 15s,
+   *  L1 30s, L2 5m, L3 1h) the fleet billed 16.5M ListBucket calls in 24 days
    *  (82.60 USD) against 50k PutObject (0.25 USD) — 99.7% of the S3 request
-   *  bill was looking, not writing. */
+   *  bill was looking, not writing. Hence the slower cadence shipped below.
+   *  The cost is strictly linear in the NUMBER of databases and independent of
+   *  traffic, so it is a per-app floor: 1.343 USD/app/month at those defaults
+   *  against 0.017 at the shipped ones. */
   litestreamL0Retention: string;
   litestreamL0RetentionCheckInterval: string;
   /** Compaction intervals for levels 1..N, in order (yaml `levels[].interval`). */
@@ -172,8 +175,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`invalid REGISTRY_MODE: ${env.REGISTRY_MODE}`);
   }
 
-  const l0Retention = durationEnv("LITESTREAM_L0_RETENTION", "5m");
-  const levelIntervals = parseLevelIntervals(env.LITESTREAM_LEVEL_INTERVALS, ["30s", "5m", "1h"]);
+  const l0Retention = durationEnv("LITESTREAM_L0_RETENTION", "3h");
+  const levelIntervals = parseLevelIntervals(env.LITESTREAM_LEVEL_INTERVALS, ["30m", "2h", "6h"]);
   assertL0RetentionCoversL1(l0Retention, levelIntervals);
 
   return {
@@ -203,11 +206,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     litestreamSyncIntervalMs: intEnv("LITESTREAM_SYNC_INTERVAL_MS", 1000),
     litestreamRetention: env.LITESTREAM_RETENTION ?? "72h",
     litestreamSnapshotInterval: env.LITESTREAM_SNAPSHOT_INTERVAL ?? "6h",
-    // Defaults reproduce litestream 0.5.14's own built-ins verbatim, so that
-    // shipping this code changes NOTHING until the intervals are set
-    // deliberately (the saving is a separate, explicit decision).
+    // The cadence Jonatan chose on 2026-08-24, after the scaling question:
+    // 0.017 USD per app per month against 1.343 at litestream's own defaults.
+    // The retention is 3h rather than the 1h the guard strictly requires — the
+    // margin is free (all replica storage bills 0.78 USD/month) and the thing
+    // it protects against is data loss.
     litestreamL0Retention: l0Retention,
-    litestreamL0RetentionCheckInterval: durationEnv("LITESTREAM_L0_RETENTION_CHECK_INTERVAL", "15s"),
+    litestreamL0RetentionCheckInterval: durationEnv("LITESTREAM_L0_RETENTION_CHECK_INTERVAL", "30m"),
     litestreamLevelIntervals: levelIntervals,
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
