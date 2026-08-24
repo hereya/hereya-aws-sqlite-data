@@ -180,33 +180,62 @@ That is the easiest way to get this test wrong.
 The marginal cost **falls** as N grows (0.450 → 0.411 → 0.293 → 0.222 MB/db).
 No knee up to 1000; the curve is sub-linear.
 
+### ⚠ The real ceiling is the Go runtime's 10 000-thread limit, not memory
+
+Confirmed twice on linux/arm64 (2026-08-24, runs 1 and 2). At **10 000 databases**
+litestream does not start — it dies during boot with:
+
+```
+runtime: program exceeds 10000-thread limit
+fatal error: thread exhaustion
+```
+
+30 019 goroutines at that point. **5 000 databases run fine** (1.85 GB RSS,
+30 006 fds), so the wall sits between 5 000 and 10 000 per process.
+
+Three properties that matter more than the number:
+
+1. **It is a crash, not degradation.** When it goes, replication stops for
+   EVERY database at once.
+2. **It is not tunable from outside.** Not a ulimit, not a sysctl — Go's
+   `debug.SetMaxThreads` default, set in-process. Raising the fd limit to
+   200 000 changed nothing (that was the first, wrong, hypothesis).
+3. **Production will hit it EARLIER than this test did.** These tiers used
+   `file://` replicas; S3 is slower, so more syscalls block concurrently and
+   more OS threads are held. The threshold with an S3 backend is likely below
+   10 000.
+
+So splitting across processes/VMs is not an optimisation — it is the only way
+past a few thousand apps, and the failure mode is abrupt.
+
 ### Measured for real on linux/arm64 (EC2, 2026-08-24) — the numbers that count
 
 `scripts/loadtest-ec2-userdata.sh` on a disposable r7g.xlarge, litestream alone,
 production cadence, empty WAL databases:
 
-| N | RSS (`file://`) | marginal MB/db |
-|---|---|---|
-| 500 | 209.9 MB | — |
-| 1000 | 364.6 MB | 0.309 |
-| 2500 | 907.5 MB | 0.362 |
-| 5000 | 1842.6 MB | 0.374 |
-| 10000 | **litestream did not survive** | — |
+| N | RSS (`file://`) | marginal MB/db | RSS (S3) | S3 overhead |
+|---|---|---|---|---|
+| 500 | 215.9 MB | — | 276.4 MB | +0.121 MB/db (+28%) |
+| 1000 | 403.9 MB | 0.376 | | |
+| 2500 | 954.9 MB | 0.367 | 1122.3 MB | +0.067 MB/db (+18%) |
+| 5000 | 1848.0 MB | 0.357 | | |
+| 10000 | **thread exhaustion** | — | | |
 
-    RSS ≈ 10 MB + 0.365 MB per database        (file://)
-    S3 backend costs +0.106 MB per database    (+25%, measured at N=500)
-    → the production slope is ~0.47 MB per database
+    RSS ≈ 40 MB + 0.362 MB per database     (file://)
+    S3 backend costs +0.094 MB per database
+    → the production slope is 0.456 MB per database
 
-**Ceilings with the S3 backend:** t4g.micro (current) ≈ **1170 apps**, t4g.small
-≈ 4000, t4g.medium ≈ 8260. A 10 000-app target therefore fits on **no instance
-of this family** — the first hard number saying VM sharding is not optional.
+The marginal cost is **flat** (0.376 / 0.367 / 0.357) — it neither rises nor
+falls. Run 1 suggested a rising trend and macOS suggested a falling one; both
+were noise on too few points. Two clean plateaus give the S3 overhead twice.
 
-Two open items from that run, both harness faults now fixed in the script:
-**litestream died at 10000 databases** and the reason is unknown because only
-the shell trace was uploaded, not litestream's own log, and the instance then
-destroyed itself with the evidence (memory was NOT the constraint — 31 GB free;
-file descriptors are the leading hypothesis). And **the S3 tier at 2500 never
-plateaued** (2.2 GB → 0.8 GB across 75s), so the +25% figure rests on N=500 alone.
+**Memory ceilings with the S3 backend:** t4g.micro (current) ≈ **1140 apps**,
+t4g.small ≈ 4070, t4g.medium ≈ 8450. But these are moot — the thread ceiling
+above bites first, and it bites as a crash.
+
+Both open items from run 1 are now closed by run 2: the 10 000 failure is
+thread exhaustion (above), and the S3 tier plateaued cleanly once the settle
+scaled with N.
 
 ⚠ **The macOS trend was an artifact.** There the marginal cost appeared to FALL
 with N; on linux/arm64 it rises. Small N on the wrong platform inverted the
