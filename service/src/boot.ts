@@ -72,7 +72,14 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   });
   try {
     const loaded = await writeStats.load();
-    if (loaded > 0) console.log(JSON.stringify({ type: "write-stats", event: "loaded", apps: loaded }));
+    if (loaded > 0) {
+      // `withTouch` is a field only this build emits, and it is the positive
+      // trace that the durable access mark actually crossed the replacement:
+      // a count above zero means this instance started already knowing which
+      // apps the previous one was serving. See t_3bdea3eeebb6.
+      const withTouch = [...writeStats.snapshot().values()].filter((s) => s.lastTouchMs > 0).length;
+      console.log(JSON.stringify({ type: "write-stats", event: "loaded", apps: loaded, withTouch }));
+    }
     // Date the observation itself. Written once, ever, then read back on every
     // later boot — it is what lets "we have never seen this app write" mature
     // from ignorance into evidence. See src/eviction.ts.
@@ -89,6 +96,17 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     // Never fail a boot over a statistic.
     console.error(JSON.stringify({ type: "write-stats", event: "load-failed", message: (err as Error).message }));
   }
+
+  // The "still in use" mark becomes durable here. Attached AFTER `load()` so
+  // the store already holds the previous instance's touches: without this the
+  // `recently-served` guard is blind after every deploy, and an app that is
+  // read constantly but never written can be evicted at the next sweep
+  // (t_3bdea3eeebb6). Attaching is all it takes — `AppSync` prefers its own
+  // in-memory mark and only falls back to this one.
+  sync.setTouchSink({
+    recordTouch: (key, atMs) => writeStats.recordTouch(key, atMs),
+    msSinceTouch: (key) => writeStats.msSinceTouch(key),
+  });
 
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
   const servedAtBoot = await sync.bootRestoreAll();

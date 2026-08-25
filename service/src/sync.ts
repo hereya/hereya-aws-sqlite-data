@@ -18,6 +18,22 @@ function log(event: Record<string, unknown>): void {
 }
 
 /**
+ * The durable side of "when was this app last used".
+ *
+ * Deliberately narrower than `WriteStats`, which is what implements it in
+ * production: `AppSync` has no business knowing about DynamoDB, counters or
+ * flush timers, and the unit tests get a two-method stub instead of a fake
+ * cloud. Both methods must be synchronous and non-throwing — `recordTouch`
+ * runs on the read path of every customer request.
+ */
+export interface TouchSink {
+  /** Someone used this app, at `atMs`. Memory only; persistence is the sink's. */
+  recordTouch(key: string, atMs: number): void;
+  /** Milliseconds since the last persisted access; null when never seen. */
+  msSinceTouch(key: string): number | null;
+}
+
+/**
  * Owns the "served set": which apps have a restored local db and are covered
  * by the litestream config. Reconciles it against the registry at boot, on the
  * poll interval, on /admin/sync, and on-demand when a request hits an app the
@@ -84,6 +100,21 @@ export class AppSync {
    * a genuinely inert one.
    */
   private readonly lastTouch = new Map<string, number>();
+  /**
+   * The durable half of `lastTouch`.
+   *
+   * `lastTouch` is process memory, so it is empty for every app after an
+   * instance replacement — and the guard above compares it against a threshold
+   * measured in DAYS. Those two facts together meant that after each deploy an
+   * app that is read constantly and never written looked untouched, and the
+   * `recently-served` guard could not protect it (`t_3bdea3eeebb6`).
+   *
+   * The sink keeps the read path free: it is a `Map.set` here and a background
+   * flush elsewhere, exactly like the write counter. Memory still wins when it
+   * has an answer — it is strictly fresher — and this only fills the gap for
+   * apps this instance has not been asked about yet.
+   */
+  private touchSink: TouchSink | null = null;
   /** Boot-restore fan-out width; see bootRestoreAll. Defaults to the serial
    *  behaviour's successor rather than to 1, but callers that do not care
    *  (tests, the file registry) need not thread it through. */
@@ -94,6 +125,28 @@ export class AppSync {
     this.manager = manager;
     this.litestream = litestream;
     this.concurrency = Math.max(1, concurrency);
+  }
+
+  /**
+   * Attach the durable touch store. Optional: without it every behaviour below
+   * is exactly what it was before, which is what keeps the file registry and
+   * the unit tests free of a DynamoDB dependency.
+   */
+  setTouchSink(sink: TouchSink): void {
+    this.touchSink = sink;
+  }
+
+  /**
+   * How long since this app was last used, memory first, store second.
+   *
+   * Null means "never seen by either", which stays evictable on purpose — the
+   * one thing this must not do is invent a recent access for an app nobody has
+   * touched, because that would switch eviction off entirely.
+   */
+  private msSinceTouched(key: string, now: number): number | null {
+    const local = this.lastTouch.get(key);
+    if (local !== undefined) return Math.max(0, now - local);
+    return this.touchSink?.msSinceTouch(key) ?? null;
   }
 
   /**
@@ -223,7 +276,11 @@ export class AppSync {
     // Stamped BEFORE the early return, deliberately: the fast path is exactly
     // the one that leaves no other trace, and it is the one the eviction sweep
     // could otherwise cut in behind. See `lastTouch`.
-    this.lastTouch.set(key, Date.now());
+    const touchedAt = Date.now();
+    this.lastTouch.set(key, touchedAt);
+    // Durable half — a Map.set on the sink, flushed on a timer. Never awaited:
+    // the read path must not gain an I/O failure mode. See `touchSink`.
+    this.touchSink?.recordTouch(key, touchedAt);
     // Served AND replicated: nothing to do — the overwhelmingly common path.
     if (this.served.has(key) && this.replicated.has(key)) return;
     const existing = this.pending.get(key);
@@ -294,18 +351,17 @@ export class AppSync {
       // request. See src/eviction.ts.
       const withServed: EvictionProbe = {
         ...probe,
-        msSinceServed: (key) => {
-          const touched = this.lastTouch.get(key);
-          return touched === undefined ? null : now - touched;
-        },
+        msSinceServed: (key) => this.msSinceTouched(key, now),
       };
       const candidates = [...this.replicated].filter((key) => {
         // Mid-promotion: that promise is a request waiting to write.
         if (this.pending.has(key)) return false;
         // Cleared to run moments ago: its statement may not have reached the
-        // limiter yet, so no other check can see it.
-        const touched = this.lastTouch.get(key);
-        return touched === undefined || now - touched >= EVICT_TOUCH_GRACE_MS;
+        // limiter yet, so no other check can see it. The persisted mark is a
+        // valid answer here too — it is at worst one flush interval stale, and
+        // staleness in this direction only KEEPS an app, which is the safe side.
+        const since = this.msSinceTouched(key, now);
+        return since === null || since >= EVICT_TOUCH_GRACE_MS;
       });
       const plan = planEviction(candidates, withServed, thresholdMs);
       if (plan.evict.length === 0) return plan;
