@@ -231,12 +231,43 @@ eviction threshold is the flush guarantee. That is also why
 `EVICTION_IDLE_DAYS` defaults to **0 (off)** and is never inferred: an operator
 sets the number, or nothing is evicted.
 
-**Idleness comes from the write counter, and ignorance is not idleness.**
-`idleMs === null` (an app the counter has never seen change) is deliberately NOT
-evictable. Since the counter's history begins when it shipped, the feature
-therefore ships INERT: nothing can be evicted until real idleness has been
-observed for the full threshold. Evicting on `null` would have done the exact
-opposite — dropped the whole fleet on the first sweep, every app being unknown.
+**Idleness comes from the write counter, and ignorance is not idleness —
+until the ignorance is older than the claim.** `idleMs === null` (an app the
+counter has never seen change) is not evictable on that fact alone: the
+counter's history begins when it shipped, so the feature ships INERT and
+evicting on `null` would have dropped the whole fleet on the first sweep, every
+app being unknown.
+
+But that rule alone has an end that undoes the feature, found on the evening the
+threshold went live (2026-08-24: the counter had seen **2 of 61** apps write, so
+the sweep could free nothing — and for the other 59 it never would). An app that
+never writes AT ALL is precisely the one that costs the VM the most, since the
+cost is a timer set and a thread rather than a byte. So the observation itself is
+**dated**: `WriteStats.ensureObserving()` stamps `sk = "_since"` in the
+`_writestats` partition with `if_not_exists`, once ever, and every later boot
+reads it back. While the counter has watched for LESS than the threshold, `null`
+still protects the app; once it has watched for LONGER, `null` means nothing
+wrote during a window we ourselves call idle. `observedForMs() === null` (no
+table, no permission, a failed call) forbids eviction — ignorance is the safe
+direction. `if_not_exists` is what makes it correct to call on every boot: a roll
+cannot move the date forward, and two instances booting together cannot produce
+two starts. Global, not per-app, and necessarily so — only apps that WROTE have a
+row to date.
+
+**And idle had to stop meaning "unwritten" and start meaning "unused".**
+Widening the population exposed a cost the write-only signal had kept rare:
+`ensureServed` promotes on ANY access (it runs before the statement, so it
+cannot know a read from a write), and every promotion is a fleet-wide bounce. An
+app read often but never written — exactly what the maturity rule admits first —
+would be evicted, promoted by the next read, evicted by the next sweep: hourly,
+per app, forever. So an app this instance SERVED inside the threshold window is
+skipped (`recently-served`), reads included. That view is `AppSync.lastTouch`,
+which is why `evictIdle` fills `msSinceServed` in itself rather than taking it
+from the caller (`InjectedEvictionProbe`). Per-INSTANCE on purpose: unknown
+("not served since boot") stays evictable, because the alternative restarts the
+clock on every deploy and a fleet that rolls weekly would never evict anything.
+The accepted cost is one bounded wave of promotions after a roll instead of an
+unbounded hourly flap.
 
 ### Two races found while building it, both silent-loss shaped
 
@@ -276,7 +307,9 @@ pays hourly for an empty result.
 ⚠ Inherited from the promotion gate and worth restating: an app that is only ever
 READ is promoted back. Eviction therefore frees apps with **no traffic at all**,
 not merely no writes. Classifying SQL to promote on writes only would make a
-misclassification a data-loss bug; this stays the conservative side.
+misclassification a data-loss bug; this stays the conservative side — and since
+2026-08-25 the `recently-served` skip makes the planner agree with it, rather
+than repeatedly evicting apps the promotion gate will hand straight back.
 
 ## Capacity telemetry (2026-08-24, `service/src/capacity.ts`)
 

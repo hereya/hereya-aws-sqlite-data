@@ -8,21 +8,41 @@
 //     on 2026-08-24 erased the signal four times).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { WriteStats, pendingSince, statKey, WRITE_STATS_PARTITION } from "../../src/write-stats.ts";
+import {
+  WriteStats,
+  pendingSince,
+  statKey,
+  WRITE_STATS_PARTITION,
+  OBSERVING_SINCE_KEY,
+} from "../../src/write-stats.ts";
 
-/** DynamoDB stand-in that records commands and can be made to fail. */
+/**
+ * DynamoDB stand-in that records commands and can be made to fail.
+ *
+ * It models `if_not_exists` for the observation date, because that is the whole
+ * mechanism under test: the FIRST writer wins and every later one reads the
+ * stored value back. A fake that echoed the caller's own timestamp would let a
+ * broken implementation restart the clock on every boot and still pass.
+ */
 function fakeDdb(opts: { items?: Record<string, unknown>[]; failUpdates?: boolean } = {}) {
   const updates: Record<string, unknown>[] = [];
+  let storedSince: string | null = null;
   const client = {
     async send(cmd: { constructor: { name: string }; input: Record<string, unknown> }) {
       const name = cmd.constructor.name;
       if (name === "QueryCommand") return { Items: opts.items ?? [] };
       if (opts.failUpdates) throw new Error("ddb down");
       updates.push(cmd.input);
+      const key = cmd.input.Key as Record<string, { S: string }> | undefined;
+      if (key?.sk?.S === OBSERVING_SINCE_KEY) {
+        const proposed = (cmd.input.ExpressionAttributeValues as Record<string, { N: string }>)[":t"]!.N;
+        storedSince ??= proposed;
+        return { Attributes: { startedMs: { N: storedSince } } };
+      }
       return {};
     },
   };
-  return { client, updates };
+  return { client, updates, since: () => storedSince };
 }
 
 const OPTS = { tableName: "reg", region: "eu-west-1" };
@@ -138,4 +158,62 @@ test("malformed stored rows are skipped, not loaded as fresh writes", async () =
   const ws = new WriteStats({ ...OPTS, client: f.client as never });
   assert.equal(await ws.load(), 1);
   assert.equal(ws.idleMsFor("org", "bad"), null);
+});
+
+// --- dating the observation ------------------------------------------------
+//
+// "This app has never been seen writing" is only worth acting on if we know how
+// long we have been looking. These pin that clock: it must start once, survive
+// a VM roll, and stay null rather than guess.
+
+test("the observation date is stamped once and never moved forward", async () => {
+  const f = fakeDdb();
+  let clock = 1_000;
+  const first = new WriteStats({ ...OPTS, client: f.client as never, now: () => clock });
+
+  assert.equal(await first.ensureObserving(), 1_000);
+  assert.deepEqual(
+    (f.updates[0]?.Key as Record<string, { S: string }>).org_id,
+    { S: WRITE_STATS_PARTITION },
+    "the date lives in the same fixed partition the instance role is scoped to",
+  );
+  assert.deepEqual((f.updates[0]?.Key as Record<string, { S: string }>).sk, { S: OBSERVING_SINCE_KEY });
+
+  // A later boot — an instance replacement — must ADOPT the stored date, not
+  // restart the clock. Restarting it is the exact failure that made the S3
+  // timestamps useless, one level up.
+  clock = 90 * 24 * 60 * 60 * 1000;
+  const afterRoll = new WriteStats({ ...OPTS, client: f.client as never, now: () => clock });
+  assert.equal(await afterRoll.ensureObserving(), 1_000, "a VM roll must not restart the observation");
+  assert.equal(afterRoll.observedForMs(), clock - 1_000);
+});
+
+test("the stored date is picked up by load(), and is never mistaken for an app", async () => {
+  // It shares the partition with the per-app rows. Every app key contains a
+  // slash; this one does not — but the loader has to say so explicitly, or the
+  // date would be counted as an app with no writes.
+  const f = fakeDdb({
+    items: [
+      { sk: { S: OBSERVING_SINCE_KEY }, startedMs: { N: "5000" } },
+      { sk: { S: "org/app" }, lastWriteMs: { N: "6000" }, writes: { N: "1" } },
+    ],
+  });
+  const ws = new WriteStats({ ...OPTS, client: f.client as never, now: () => 65_000 });
+
+  assert.equal(await ws.load(), 1, "the date is not an app");
+  assert.equal(ws.observingSinceMs, 5_000);
+  assert.equal(ws.observedForMs(), 60_000);
+  assert.equal(ws.idleMsFor(OBSERVING_SINCE_KEY, ""), null);
+});
+
+test("a counter that cannot date itself reports null, not zero", async () => {
+  // Zero would read as "watching since forever" and would make every unseen app
+  // instantly evictable. Null is the only safe ignorance.
+  const noTable = new WriteStats({ tableName: "", region: "eu-west-1" });
+  assert.equal(await noTable.ensureObserving(), null);
+  assert.equal(noTable.observedForMs(), null);
+
+  const broken = new WriteStats({ ...OPTS, client: fakeDdb({ failUpdates: true }).client as never });
+  await assert.doesNotReject(() => broken.ensureObserving(), "a statistic must never break a boot");
+  assert.equal(broken.observedForMs(), null);
 });

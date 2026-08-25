@@ -5,7 +5,13 @@ import { appKeyOf } from "./apps.ts";
 import type { Litestream, LitestreamApp } from "./litestream.ts";
 import type { Registry } from "./registry.ts";
 import { ServiceError } from "./errors.ts";
-import { EVICT_TOUCH_GRACE_MS, planEviction, type EvictionPlan, type EvictionProbe } from "./eviction.ts";
+import {
+  EVICT_TOUCH_GRACE_MS,
+  planEviction,
+  type EvictionPlan,
+  type EvictionProbe,
+  type InjectedEvictionProbe,
+} from "./eviction.ts";
 
 function log(event: Record<string, unknown>): void {
   console.log(JSON.stringify({ type: "sync", ...event }));
@@ -278,9 +284,21 @@ export class AppSync {
    * is that litestream stops watching it until the next statement brings it
    * back through `ensureServed`.
    */
-  async evictIdle(probe: EvictionProbe, thresholdMs: number): Promise<EvictionPlan> {
+  async evictIdle(probe: InjectedEvictionProbe, thresholdMs: number): Promise<EvictionPlan> {
     return this.withConfig(async () => {
       const now = Date.now();
+      // `lastTouch` is ours, not the caller's, so the planner is handed a view
+      // of it rather than boot.ts having to reach in here. It answers "has
+      // anyone used this app lately", reads included — the question the write
+      // counter cannot answer and `ensureServed` implicitly asks on every
+      // request. See src/eviction.ts.
+      const withServed: EvictionProbe = {
+        ...probe,
+        msSinceServed: (key) => {
+          const touched = this.lastTouch.get(key);
+          return touched === undefined ? null : now - touched;
+        },
+      };
       const candidates = [...this.replicated].filter((key) => {
         // Mid-promotion: that promise is a request waiting to write.
         if (this.pending.has(key)) return false;
@@ -289,13 +307,16 @@ export class AppSync {
         const touched = this.lastTouch.get(key);
         return touched === undefined || now - touched >= EVICT_TOUCH_GRACE_MS;
       });
-      const plan = planEviction(candidates, probe, thresholdMs);
+      const plan = planEviction(candidates, withServed, thresholdMs);
       if (plan.evict.length === 0) return plan;
       for (const key of plan.evict) this.replicated.delete(key);
       await this.litestream.bounce(this.replicatedApps);
       log({
         event: "evicted",
         apps: plan.evict.length,
+        // How many were freed on "watched longer than the threshold, never
+        // wrote" rather than on a recorded write going stale.
+        unobserved: plan.evictedUnobserved,
         stillReplicated: this.replicated.size,
         served: this.served.size,
         skipped: plan.skipped,
