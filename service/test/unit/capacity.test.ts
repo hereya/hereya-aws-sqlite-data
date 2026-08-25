@@ -8,7 +8,13 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readMemoryAvailableBytes, readProcessRssBytes, sampleCapacity } from "../../src/capacity.ts";
+import {
+  diskSpaceFrom,
+  readDiskSpace,
+  readMemoryAvailableBytes,
+  readProcessRssBytes,
+  sampleCapacity,
+} from "../../src/capacity.ts";
 
 /** A throwaway /proc: these files cannot be faked by monkey-patching fs. */
 function fakeProc(opts: { pid?: number; vmRss?: string; meminfo?: string } = {}): string {
@@ -66,5 +72,55 @@ test("sampleCapacity reports both when both are readable", () => {
   assert.deepEqual(sampleCapacity(1234, root), {
     litestreamRssBytes: 56996 * 1024,
     memoryAvailableBytes: 563000 * 1024,
+    // No path asked for, no disk reading invented.
+    disk: null,
   });
+});
+
+// --- Disk: the third resource, and the only one eviction never gives back ---
+// A full volume is SQLITE_FULL on every org's writes at once, while every other
+// instrument stays green. These tests pin the arithmetic, because that is the
+// half that can be silently wrong: a probe reporting plenty of room on a full
+// disk fails in exactly the direction nobody would notice.
+
+test("disk arithmetic: bytes and percent from blocks", () => {
+  // 1000 blocks of 4096 = 4 MB, 250 available = 1 MB free, 75% used.
+  assert.deepEqual(diskSpaceFrom({ bsize: 4096, blocks: 1000, bavail: 250 }), {
+    diskAvailableBytes: 250 * 4096,
+    diskTotalBytes: 1000 * 4096,
+    diskUsedPercent: 75,
+  });
+});
+
+test("a full disk reads as full, not as an error", () => {
+  const sample = diskSpaceFrom({ bsize: 4096, blocks: 1000, bavail: 0 });
+  assert.equal(sample?.diskAvailableBytes, 0);
+  assert.equal(sample?.diskUsedPercent, 100);
+});
+
+test("an impossible statfs yields null rather than a fabricated 100%", () => {
+  // Without this guard a zero block count divides by zero and publishes NaN, and
+  // a zero block size publishes "0 bytes free, 100% used" — i.e. pages someone
+  // at 3am for a division that never happened.
+  assert.equal(diskSpaceFrom({ bsize: 0, blocks: 1000, bavail: 10 }), null);
+  assert.equal(diskSpaceFrom({ bsize: 4096, blocks: 0, bavail: 0 }), null);
+  assert.equal(diskSpaceFrom({ bsize: 4096, blocks: 1000, bavail: -1 }), null);
+  assert.equal(diskSpaceFrom({ bsize: Number.NaN, blocks: 1000, bavail: 10 }), null);
+});
+
+test("readDiskSpace reads a real filesystem, and null for a missing path", () => {
+  const here = readDiskSpace(tmpdir());
+  assert.notEqual(here, null);
+  assert.ok(here!.diskTotalBytes > 0);
+  assert.ok(here!.diskAvailableBytes >= 0);
+  assert.ok(here!.diskUsedPercent >= 0 && here!.diskUsedPercent <= 100);
+  // Boot samples this before the database directory is guaranteed to exist.
+  assert.equal(readDiskSpace(join(tmpdir(), "no-such-dir-3f9a2")), null);
+});
+
+test("sampleCapacity reports the disk only when asked for a path", () => {
+  const root = fakeProc({ pid: 1234, meminfo: MEMINFO });
+  const sample = sampleCapacity(1234, root, tmpdir());
+  assert.notEqual(sample.disk, null);
+  assert.ok(sample.disk!.diskTotalBytes > 0);
 });

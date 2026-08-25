@@ -15,6 +15,13 @@ export const METRIC_SERVED_APPS = "ServedApps";
 /** Apps litestream actually watches. Below ServedApps by the number never
  *  written — the gap IS the saving, so it has to be visible. */
 export const METRIC_REPLICATED_APPS = "ReplicatedApps";
+/** The third resource, and the only one eviction never gives back: an evicted
+ *  app keeps its file on disk, so this number only ever falls. */
+export const METRIC_DISK_AVAILABLE = "DiskAvailableBytes";
+/** Published alongside the raw bytes because it is the only one that stays
+ *  comparable after the volume is grown — the fix for a full disk changes the
+ *  denominator, which would put a step in the bytes series and none here. */
+export const METRIC_DISK_USED_PERCENT = "DiskUsedPercent";
 
 export interface CapacitySource {
   /** Pid of the litestream process, or null when none is running. */
@@ -27,6 +34,10 @@ export interface CapacitySource {
    *  against a fixture instead of the host's real /proc — which does not exist
    *  on macOS, where these tests are usually run. */
   procRoot?: string;
+  /** Filesystem path to measure free space on — the database directory. Absent
+   *  = no disk datapoints (the sampler is never invented from a default: a
+   *  probe pointed at the wrong volume is worse than no probe). */
+  diskPath?: string;
 }
 
 export class Heartbeat {
@@ -61,7 +72,11 @@ export class Heartbeat {
     if (this.capacity === null) return [];
     const dimensions = [{ Name: "stack", Value: this.cfg.heartbeatDimension }];
     const data: MetricDatum[] = [];
-    const sample = sampleCapacity(this.capacity.litestreamPid(), this.capacity.procRoot);
+    const sample = sampleCapacity(
+      this.capacity.litestreamPid(),
+      this.capacity.procRoot,
+      this.capacity.diskPath,
+    );
     if (sample.litestreamRssBytes !== null) {
       data.push({
         MetricName: METRIC_LITESTREAM_RSS,
@@ -76,6 +91,20 @@ export class Heartbeat {
         Dimensions: dimensions,
         Unit: "Bytes",
         Value: sample.memoryAvailableBytes,
+      });
+    }
+    if (sample.disk !== null) {
+      data.push({
+        MetricName: METRIC_DISK_AVAILABLE,
+        Dimensions: dimensions,
+        Unit: "Bytes",
+        Value: sample.disk.diskAvailableBytes,
+      });
+      data.push({
+        MetricName: METRIC_DISK_USED_PERCENT,
+        Dimensions: dimensions,
+        Unit: "Percent",
+        Value: sample.disk.diskUsedPercent,
       });
     }
     data.push({

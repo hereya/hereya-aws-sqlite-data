@@ -318,11 +318,12 @@ BEFORE death — **"how many more apps fit"** — and nothing could answer it un
 now: the only way to read litestream's memory was an SSM session and `ps` by
 hand, which is to say it was never read.
 
-Three metrics in `Dilaya/SqliteData`, published on the heartbeat's own timer and
-in the same `PutMetricData` call: `LitestreamRssBytes`, `MemoryAvailableBytes`,
-`ServedApps`. Raw, never pre-divided — RSS-per-app is the interesting quantity,
-but a ratio computed on the box is a number nobody can re-slice; CloudWatch
-metric math divides at read time.
+Metrics in `Dilaya/SqliteData`, published on the heartbeat's own timer and in the
+same `PutMetricData` call: `LitestreamRssBytes`, `MemoryAvailableBytes`,
+`ServedApps`, `ReplicatedApps`, and — since 2026-08-25 — `DiskAvailableBytes` +
+`DiskUsedPercent`. Raw, never pre-divided — RSS-per-app is the interesting
+quantity, but a ratio computed on the box is a number nobody can re-slice;
+CloudWatch metric math divides at read time.
 
 **The two silences are opposite, and that is the whole design.** The `Heartbeat`
 datum is published ONLY when healthy (its absence *is* the alarm). The capacity
@@ -340,6 +341,59 @@ Alarm `${stackName}-memory-headroom` fires under `memoryHeadroomBytes` (default
 150 MB). It is `notBreaching` on missing data, unlike its neighbours: silence
 here means the heartbeat stopped, and that alarm already pages — two alerts for
 one incident is noise, and noise is how alarms get ignored.
+
+### The disk — the third resource, and the only one nothing gives back (2026-08-25)
+
+Memory got its instrument on 2026-08-24, the thread ceiling was measured the same
+day, and eviction shipped to defend both. The filesystem had **nothing**: no
+metric read free space, and `quota.ts` measures size per org but never what is
+left on the volume.
+
+**Eviction cannot help here, by construction.** `eviction.ts` says it in its own
+header — an evicted app leaves the litestream config but *stays served, and its
+file stays on disk*. It frees a thread and ~0.46 MB of RSS, never a byte of disk.
+Databases of deleted customers are not removed either. Disk is therefore the one
+curve that only goes up.
+
+**What the end looks like, and why nothing else could see it coming:** a full
+volume is `SQLITE_FULL` on the writes of every org at once — while the heartbeat
+still beats (the process is alive), memory is still free, threads are fine, the
+Lambdas raise nothing as long as nobody writes, and CloudFront serves 200s. Every
+existing instrument stays green until the first error.
+
+**Measured on the production volume, 2026-08-25 — and it is not what the database
+sizes suggest:**
+
+```
+/            8.51 GB total, 4.37 GB used (52%), 4.14 GB free
+/var/lib/dilaya/dbs                       2.10 GB
+  ├─ app.db files (61 apps)                726 MB
+  └─ .app.db-litestream staging dirs      1.37 GB   ← 1.9× the databases
+```
+
+The proposal that opened this work assumed the databases were tiny (the largest
+*compressed snapshot* is 220 KB) and that the disk was therefore far away. It is
+half full, and the larger half of the database directory is litestream's local
+staging, not customer data. One app alone holds a 703 MB `app.db`.
+
+`DiskAvailableBytes` is what the alarm watches; `DiskUsedPercent` rides along
+because it is the one that stays comparable after the volume is grown — growing
+it changes the denominator, which puts a step in the bytes series and none in the
+percentage. `readDiskSpace` returns `null` rather than throwing, same contract as
+the `/proc` probes; `diskSpaceFrom` is split out as a pure function so the
+arithmetic — the half that can be silently wrong — is tested without needing a
+filesystem of a given fullness. An impossible statfs yields `null`, never a
+fabricated "0 bytes free, 100% used".
+
+Alarm `${stackName}-disk-headroom` fires under `diskHeadroomBytes` (default 1.5
+GiB ≈ 3 months at the observed ~0.5 GB/month), `notBreaching` on missing data for
+the same reason as its memory twin. The fix it calls for — growing the gp3 volume
+— is an online operation; the point of three months of warning is that it happens
+deliberately rather than at 3am.
+
+Boot also logs the volume once (`{"type":"disk","event":"volume",…}`): the metric
+answers "is it filling up", the line answers "how big is it", and a size does not
+belong in a per-minute series.
 ## Load harness + the memory model (2026-08-24, `scripts/loadtest.mjs`)
 
 ```

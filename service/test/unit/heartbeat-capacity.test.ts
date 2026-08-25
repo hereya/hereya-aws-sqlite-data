@@ -15,6 +15,8 @@ import { test } from "node:test";
 import {
   Heartbeat,
   METRIC_NAME,
+  METRIC_DISK_AVAILABLE,
+  METRIC_DISK_USED_PERCENT,
   METRIC_LITESTREAM_RSS,
   METRIC_MEMORY_AVAILABLE,
   METRIC_SERVED_APPS,
@@ -53,12 +55,18 @@ function fakeProc(pid: number | null): string {
   return root;
 }
 
-async function beatOnce(healthy: boolean, servedApps = 61, pid: number | null = null) {
+async function beatOnce(
+  healthy: boolean,
+  servedApps = 61,
+  pid: number | null = null,
+  diskPath: string | undefined = tmpdir(),
+) {
   const rec = recordingClient();
   const hb = new Heartbeat(makeCfg(), () => healthy, rec.client as never, {
     litestreamPid: () => pid,
     servedApps: () => servedApps,
     procRoot: fakeProc(pid),
+    diskPath,
   });
   hb.start();
   await new Promise((r) => setTimeout(r, 20));
@@ -113,6 +121,59 @@ test("a missing RSS reading drops that datapoint, not the whole tick", async () 
   assert.ok(!names.includes(METRIC_LITESTREAM_RSS), "no pid means no RSS datum");
   assert.ok(names.includes(METRIC_SERVED_APPS), "the rest of the tick must survive");
   assert.ok(names.includes(METRIC_NAME));
+});
+
+// --- Disk ------------------------------------------------------------------
+// Disk is the resource eviction can never give back (an evicted app keeps its
+// file), so it is the only one whose curve is monotone. It rides the same tick,
+// the same call and the same IAM as its neighbours.
+
+test("the disk datapoints ride the same call as the rest", async () => {
+  const rec = await beatOnce(true);
+  assert.equal(rec.calls.length, 1, "the disk must not cost a second PutMetricData");
+  const free = rec.calls.flat().find((d) => d.MetricName === METRIC_DISK_AVAILABLE);
+  const pct = rec.calls.flat().find((d) => d.MetricName === METRIC_DISK_USED_PERCENT);
+  assert.ok((free?.Value ?? 0) > 0, "free space must be a real reading, in bytes");
+  assert.equal(free?.Unit, "Bytes");
+  assert.ok((pct?.Value ?? -1) >= 0 && (pct?.Value ?? 101) <= 100);
+  assert.equal(pct?.Unit, "Percent");
+});
+
+test("unhealthy: the disk is STILL published", async () => {
+  // Same rule as memory, and the same regression to guard: a disk about to fill
+  // is precisely when the service starts failing, so a probe gated on health
+  // would go quiet at the only moment it matters.
+  const rec = await beatOnce(false);
+  const names = rec.names();
+  assert.ok(names.includes(METRIC_DISK_AVAILABLE), "free space must survive an unhealthy tick");
+  assert.ok(names.includes(METRIC_DISK_USED_PERCENT));
+});
+
+test("an unreadable path drops the disk datapoints, not the whole tick", async () => {
+  const rec = await beatOnce(true, 61, null, join(tmpdir(), "no-such-dir-91b3c"));
+  const names = rec.names();
+  assert.ok(!names.includes(METRIC_DISK_AVAILABLE), "an unreadable path must not publish a fabricated 0");
+  assert.ok(!names.includes(METRIC_DISK_USED_PERCENT));
+  assert.ok(names.includes(METRIC_SERVED_APPS), "the rest of the tick must survive");
+  assert.ok(names.includes(METRIC_NAME));
+});
+
+test("no path configured means no disk datapoints", async () => {
+  // Built directly rather than through beatOnce: passing `undefined` to a
+  // defaulted parameter takes the default, so the helper cannot express "no
+  // path at all" — which is the case an older deployment actually runs.
+  const rec = recordingClient();
+  const hb = new Heartbeat(makeCfg(), () => true, rec.client as never, {
+    litestreamPid: () => null,
+    servedApps: () => 61,
+    procRoot: fakeProc(null),
+  });
+  hb.start();
+  await new Promise((r) => setTimeout(r, 20));
+  hb.stop();
+  const names = rec.names();
+  assert.ok(!names.includes(METRIC_DISK_AVAILABLE), "no path must mean no disk datum");
+  assert.ok(names.includes(METRIC_SERVED_APPS), "the rest of the tick is unaffected");
 });
 
 test("capacity is inert when no source is wired (back-compat)", async () => {

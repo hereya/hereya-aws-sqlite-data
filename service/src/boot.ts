@@ -4,6 +4,7 @@
 import type { Server } from "node:http";
 import type { Config } from "./config.ts";
 import { AppManager } from "./apps.ts";
+import { readDiskSpace } from "./capacity.ts";
 import { CloudMapRegistration } from "./cloudmap.ts";
 import { daysToMs } from "./eviction.ts";
 import { Heartbeat } from "./heartbeat.ts";
@@ -208,8 +209,28 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     litestreamPid: () => litestream.childPid,
     servedApps: () => sync.servedApps.length,
     replicatedApps: () => sync.replicatedApps.length,
+    diskPath: cfg.dbDir,
   });
   heartbeat.start();
+
+  // Announce the volume once, at boot. The metric next door answers "is it
+  // filling up"; this line answers the question asked at the other end — "how
+  // many apps does this machine hold" — which needs the SIZE, and a size does
+  // not belong in a per-minute series. Before it existed the only way to know
+  // was an SSM session and `df`.
+  const disk = readDiskSpace(cfg.dbDir);
+  if (disk !== null) {
+    console.log(
+      JSON.stringify({
+        type: "disk",
+        event: "volume",
+        path: cfg.dbDir,
+        totalBytes: disk.diskTotalBytes,
+        availableBytes: disk.diskAvailableBytes,
+        usedPercent: Math.round(disk.diskUsedPercent * 10) / 10,
+      }),
+    );
+  }
 
   const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry, cloudMap });
   shutdownRef = shutdown;
