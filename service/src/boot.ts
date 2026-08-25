@@ -73,6 +73,18 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   try {
     const loaded = await writeStats.load();
     if (loaded > 0) console.log(JSON.stringify({ type: "write-stats", event: "loaded", apps: loaded }));
+    // Date the observation itself. Written once, ever, then read back on every
+    // later boot — it is what lets "we have never seen this app write" mature
+    // from ignorance into evidence. See src/eviction.ts.
+    const since = await writeStats.ensureObserving();
+    console.log(
+      JSON.stringify({
+        type: "write-stats",
+        event: "observing",
+        since: since === null ? null : new Date(since).toISOString(),
+        forDays: since === null ? null : Math.round((Date.now() - since) / 86_400_000),
+      }),
+    );
   } catch (err) {
     // Never fail a boot over a statistic.
     console.error(JSON.stringify({ type: "write-stats", event: "load-failed", message: (err as Error).message }));
@@ -148,6 +160,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
       },
       hasOpenTx: (key: string) => txRegistry.hasOpenTx(key),
       inFlight: (key: string) => limiter.inFlight(key),
+      observedForMs: () => writeStats.observedForMs(),
     };
     evictionSweep = setInterval(() => {
       void sync.evictIdle(probe, evictionThresholdMs).catch((err) => {
@@ -158,7 +171,18 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     }, cfg.evictionSweepMs);
     evictionSweep.unref();
     console.log(
-      JSON.stringify({ type: "eviction", event: "enabled", idleDays: cfg.evictionIdleDays, sweepMs: cfg.evictionSweepMs }),
+      JSON.stringify({
+        type: "eviction",
+        event: "enabled",
+        idleDays: cfg.evictionIdleDays,
+        sweepMs: cfg.evictionSweepMs,
+        // Until this exceeds idleDays, an app the counter never saw write stays
+        // protected — so this number says what the sweep is actually able to do.
+        observedForDays: (() => {
+          const ms = writeStats.observedForMs();
+          return ms === null ? null : Math.round(ms / 86_400_000);
+        })(),
+      }),
     );
   }
 

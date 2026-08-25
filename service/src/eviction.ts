@@ -29,11 +29,54 @@
 //
 // Idleness is measured by the per-app write counter (`write-stats.ts`), whose
 // history begins when it shipped (2026-08-24). `idleMs === null` — an app the
-// counter has never seen change — is deliberately NOT evictable: absence of
-// evidence is not evidence of idleness. A consequence worth stating plainly:
-// nothing can be evicted until the counter has actually observed an app go
-// quiet for the full threshold, so this ships inert and takes effect only as
-// real idleness accumulates.
+// counter has never seen change — is not evictable on that fact alone:
+// absence of evidence is not evidence of idleness. So this ships inert and
+// takes effect only as real idleness accumulates.
+//
+// BUT "WE HAVE NEVER SEEN IT WRITE" IS A CLAIM WITH A CLOCK ON IT
+//
+// That rule, left alone, has an end that undoes the feature. An app that never
+// writes AT ALL would never become evictable — and it is precisely the app
+// that costs the VM the most, since the cost is a timer set and a thread, not
+// a byte written. On the evening the threshold went live, the counter had seen
+// 2 of 61 apps write: the sweep could free nothing, and for 59 of them it never
+// would.
+//
+// What breaks the tie is dating the observation itself
+// (`WriteStats.observedForMs`, persisted in DynamoDB so a VM roll cannot
+// restart the clock). While the counter has watched for LESS than the
+// threshold, `null` still means "we do not know" and still protects the app.
+// Once it has watched for LONGER than the threshold, `null` has stopped being
+// ignorance: nothing wrote during a window that, by our own definition, is
+// long enough to call an app idle. Absence of evidence became evidence of
+// absence the moment the observation outlasted the claim.
+//
+// This changes WHICH apps are evictable, never what eviction does to one. An
+// app admitted through this path is still put through every other guard below,
+// and eviction still means only "litestream stops watching it until the next
+// statement brings it back".
+//
+// WHY "IDLE" HAD TO STOP MEANING "UNWRITTEN" AND START MEANING "UNUSED"
+//
+// Widening the population exposed a cost the write-only signal had kept rare.
+// `ensureServed` promotes an app on ANY access — it runs BEFORE the statement,
+// so it cannot yet know a read from a write — and every promotion is a
+// litestream bounce, which stops and respawns the single process replicating
+// the WHOLE fleet. An app that is read often but never written is therefore
+// the worst possible eviction candidate: evict it, the next read promotes it,
+// the next sweep evicts it again. Hourly, per app, fleet-wide.
+//
+// Those apps are exactly what the new rule would have admitted first, so the
+// definition of idle has to widen with it: an app this instance SERVED inside
+// the threshold window is in use, whatever the write counter says. `lastTouch`
+// answers that, and it answers it for reads too.
+//
+// It is deliberately per-INSTANCE, unlike the write history. Unknown ("this
+// instance has not served it since boot") reads as evictable, and it has to:
+// the alternative restarts the clock on every deploy, and a fleet that rolls
+// weekly would never evict anything. The cost of that choice is one wave of
+// promotions after each roll, bounded and one-off, instead of an unbounded
+// hourly flap.
 
 /** What the sweep needs to know about one app, injected so this stays pure. */
 export interface EvictionProbe {
@@ -43,14 +86,49 @@ export interface EvictionProbe {
   hasOpenTx: (key: string) => boolean;
   /** Statements currently executing against it. */
   inFlight: (key: string) => number;
+  /**
+   * How long the write counter has been watching, in ms; null = it cannot say.
+   *
+   * Global rather than per-app, and that is the correct shape: the apps this
+   * answers for are exactly the ones with no row of their own to date.
+   */
+  observedForMs: () => number | null;
+  /**
+   * ms since this instance last served a request for the app — reads included;
+   * null when it has not served one since boot.
+   *
+   * Supplied by `AppSync`, which owns the map. Null means evictable on
+   * purpose: see the header.
+   */
+  msSinceServed: (key: string) => number | null;
 }
 
+/**
+ * The half of the probe a caller injects.
+ *
+ * `msSinceServed` is excluded because `AppSync` owns the map behind it and
+ * fills it in itself — the type says so rather than a comment asking callers
+ * to pass a placeholder they cannot compute.
+ */
+export type InjectedEvictionProbe = Omit<EvictionProbe, "msSinceServed">;
+
 /** Why an app was left alone — logged, so a sweep that frees nothing explains itself. */
-export type EvictionSkip = "never-observed" | "recently-written" | "open-tx" | "in-flight";
+export type EvictionSkip =
+  | "never-observed"
+  | "recently-written"
+  | "recently-served"
+  | "open-tx"
+  | "in-flight";
 
 export interface EvictionPlan {
   evict: string[];
   skipped: Record<EvictionSkip, number>;
+  /**
+   * How many of `evict` were admitted on a long-enough observation rather than
+   * on a recorded write — the only number that says whether that rule is doing
+   * anything, and the one to watch on the first sweep after it ships.
+   */
+  evictedUnobserved: number;
 }
 
 /**
@@ -68,25 +146,48 @@ export function planEviction(
   const skipped: Record<EvictionSkip, number> = {
     "never-observed": 0,
     "recently-written": 0,
+    "recently-served": 0,
     "open-tx": 0,
     "in-flight": 0,
   };
   // A non-positive threshold disables eviction entirely — the off switch, and
   // the state the feature ships in until it is deliberately configured.
-  if (!(thresholdMs > 0)) return { evict: [], skipped };
+  if (!(thresholdMs > 0)) return { evict: [], skipped, evictedUnobserved: 0 };
+
+  // Has the counter watched for longer than the window we call "idle"? Only
+  // then does "never seen writing" carry any information. Null (the counter
+  // cannot date itself) reads as no, which keeps every unobserved app.
+  const observedFor = probe.observedForMs();
+  const outlastsThreshold = observedFor !== null && observedFor > thresholdMs;
 
   const evict: string[] = [];
+  let evictedUnobserved = 0;
   for (const key of replicatedKeys) {
     const idle = probe.idleMs(key);
-    // Never seen change. Could be genuinely inert, could be an app whose
-    // history predates the counter. We cannot tell the two apart, so we keep
-    // watching it.
+    let unobserved = false;
+    // Never seen change. Whether that is ignorance or inertness depends
+    // entirely on how long we have been looking.
     if (idle === null) {
-      skipped["never-observed"] += 1;
+      if (!outlastsThreshold) {
+        skipped["never-observed"] += 1;
+        continue;
+      }
+      // Watched for longer than the threshold and it never wrote: idle, by the
+      // same definition every other app here is judged with. It still has to
+      // pass the guards below.
+      unobserved = true;
+    } else if (idle < thresholdMs) {
+      skipped["recently-written"] += 1;
       continue;
     }
-    if (idle < thresholdMs) {
-      skipped["recently-written"] += 1;
+    // Served inside the window, by anyone, for anything. A promotion costs a
+    // fleet-wide bounce, so evicting an app that is still being used does not
+    // free a thread — it buys a bounce an hour. Null = not served since boot,
+    // which is the state a fresh instance is in for every app it has not been
+    // asked about, and it must stay evictable.
+    const served = probe.msSinceServed(key);
+    if (served !== null && served < thresholdMs) {
+      skipped["recently-served"] += 1;
       continue;
     }
     // An open transaction may write at any moment, and its statements do NOT
@@ -103,8 +204,9 @@ export function planEviction(
       continue;
     }
     evict.push(key);
+    if (unobserved) evictedUnobserved += 1;
   }
-  return { evict, skipped };
+  return { evict, skipped, evictedUnobserved };
 }
 
 /**

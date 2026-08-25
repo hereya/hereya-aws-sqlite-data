@@ -46,6 +46,28 @@ import {
 /** The fixed partition. Org ids are UUIDs, so this literal cannot collide. */
 export const WRITE_STATS_PARTITION = "_writestats";
 
+/**
+ * The sort key holding WHEN THIS COUNTER FIRST STARTED WATCHING.
+ *
+ * Every app row's sort key is `<orgId>/<appId>` and therefore contains a
+ * slash; this one does not, so it can never be mistaken for an app — the same
+ * argument that makes the partition literal safe, one level down.
+ *
+ * It exists because "never seen writing" is ambiguous, and the ambiguity has a
+ * clock. On the day the counter shipped it means "we know nothing". After the
+ * counter has watched for longer than the eviction threshold it means
+ * something quite different: nothing wrote for that whole period. Without a
+ * durable start date the two are indistinguishable forever, and an app that
+ * never writes — the very one that costs the VM the most — can never be
+ * evicted. See `planEviction`, which is the only reader.
+ *
+ * Durability is the whole point, and it is why this lives in DynamoDB next to
+ * the counters rather than in memory: an instance replacement must not restart
+ * the observation. That is exactly the trap that forced the counters
+ * themselves out of the replica bucket (four VM rolls on 2026-08-24).
+ */
+export const OBSERVING_SINCE_KEY = "_since";
+
 export interface WriteStat {
   /** Epoch ms of the last statement that changed this database. */
   lastWriteMs: number;
@@ -84,6 +106,8 @@ export class WriteStats {
   private readonly tableName: string;
   private readonly now: () => number;
   private timer: NodeJS.Timeout | null = null;
+  /** Epoch ms this counter began observing; null while unknown. */
+  private observingSince: number | null = null;
 
   constructor(opts: {
     tableName: string;
@@ -128,6 +152,63 @@ export class WriteStats {
     return stat ? this.now() - stat.lastWriteMs : null;
   }
 
+  /**
+   * How long this counter has been watching, in ms; null when it cannot tell.
+   *
+   * This is deliberately a GLOBAL property, not a per-app one, and it has to
+   * be: only apps that actually wrote are ever persisted, so there is no
+   * per-app row to date for the apps this number exists to reason about. What
+   * it licenses is a single inference — "nothing wrote for the whole window" —
+   * which is exactly the one eviction needs.
+   *
+   * Null is the ignorant answer and it must stay distinguishable from zero:
+   * callers treat it as "do not conclude anything", which keeps an app
+   * replicated.
+   */
+  observedForMs(): number | null {
+    return this.observingSince === null ? null : Math.max(0, this.now() - this.observingSince);
+  }
+
+  /** Epoch ms of the observation start, for logs; null while unknown. */
+  get observingSinceMs(): number | null {
+    return this.observingSince;
+  }
+
+  /**
+   * Stamp the observation start if it has never been stamped, and adopt
+   * whatever value wins.
+   *
+   * `if_not_exists` makes this a single atomic call that is correct to run on
+   * EVERY boot: the first instance ever to run it sets the date, every later
+   * one reads back the date already there. There is no race to lose and no
+   * conditional failure to handle — two instances booting together cannot
+   * produce two different starts, and a roll cannot move it forward.
+   *
+   * Failure is silent on purpose. A counter that cannot date itself returns
+   * null, and null forbids eviction — the safe direction.
+   */
+  async ensureObserving(): Promise<number | null> {
+    if (!this.client || !this.tableName) return this.observingSince;
+    try {
+      const res = await this.client.send(
+        new UpdateItemCommand({
+          TableName: this.tableName,
+          Key: { org_id: { S: WRITE_STATS_PARTITION }, sk: { S: OBSERVING_SINCE_KEY } },
+          UpdateExpression: "SET startedMs = if_not_exists(startedMs, :t)",
+          ExpressionAttributeValues: { ":t": { N: String(this.now()) } },
+          ReturnValues: "ALL_NEW",
+        })
+      );
+      const stamped = Number(res.Attributes?.startedMs?.N ?? "");
+      if (Number.isFinite(stamped) && stamped > 0) this.observingSince = stamped;
+    } catch (err) {
+      console.error(
+        JSON.stringify({ type: "write-stats", event: "observing-since-failed", message: (err as Error).message })
+      );
+    }
+    return this.observingSince;
+  }
+
   /** Seed from DynamoDB at boot, so an instance replacement keeps the history. */
   async load(): Promise<number> {
     if (!this.client || !this.tableName) return 0;
@@ -144,6 +225,12 @@ export class WriteStats {
       );
       for (const item of res.Items ?? []) {
         const key = item.sk?.S;
+        // The observation date shares the partition but is not an app.
+        if (key === OBSERVING_SINCE_KEY) {
+          const started = Number(item.startedMs?.N ?? "");
+          if (Number.isFinite(started) && started > 0) this.observingSince = started;
+          continue;
+        }
         const lastWriteMs = Number(item.lastWriteMs?.N ?? "0");
         if (!key || !Number.isFinite(lastWriteMs) || lastWriteMs <= 0) continue;
         this.stats.set(key, { lastWriteMs, writes: Number(item.writes?.N ?? "0") });
