@@ -394,6 +394,53 @@ deliberately rather than at 3am.
 Boot also logs the volume once (`{"type":"disk","event":"volume",…}`): the metric
 answers "is it filling up", the line answers "how big is it", and a size does not
 belong in a per-minute series.
+
+### What an app actually costs on disk: ~2x its database (2026-08-25, `t_7f06618a3f17`)
+
+Measuring the volume raised a second question — the database directory was 2.10
+GB while the `app.db` files came to 726 MB. The other 1.37 GB sat in litestream's
+local `.app.db-litestream/ltx/` directories, and the largest app's held **two
+files of 680 MB each, next to a 703 MB database**. The first reading of that was
+alarming and **wrong**: it looked as though each write cost a full copy, which
+would have meant a handful of writes could fill the volume and take every org's
+writes down with it.
+
+Measuring a frequently-written app settles it. **Ordinary writes are deltas of a
+few hundred bytes to a few KB**, exactly as designed:
+
+```
+app 9e9e8840  db 7.5 MB    ltx files: 3.4K 3.4K 4.8K 17K 2.8K 206B
+app 0531dadf  db 356 KB    ltx files: 1.4K 206B 1.4K 206B
+```
+
+The full-size file is written **once per app per boot**, right after the restore —
+a snapshot of the whole database, not a delta. Its size tracks the database, not
+the traffic: 97% of the database for the big app, 35-71% for small ones (SQLite
+page granularity makes the ratio noisier when the file is tiny).
+
+**And retention does reclaim it.** Watched across the 3 h `litestreamL0Retention`
+horizon on the 2026-08-25 boot: of the two 680 MB files written at 08:06, the
+older was gone by 11:39 and the newest kept. Fleet-wide the staging directories
+then came to **0.94x** the database bytes (684 MB against 726 MB) — i.e. about
+one snapshot per app.
+
+So the sizing law, which nothing stated before:
+
+    disk per app  ≈  2 x its database        (steady state: db + one snapshot)
+                  ≈  3 x its database        (transiently, for `litestreamL0Retention`
+                                              after a roll — the new snapshot while
+                                              the previous one lives out its window)
+
+**The consequence worth remembering is about ROLLS, not writes.** Every instance
+replacement writes a fresh full-size snapshot for every app at once, so a roll
+transiently costs another ~1x the fleet's total database bytes. Today that is
+~700 MB against 4.65 GB free, comfortable. It scales with total database bytes
+and not with app count, so the number to watch is the sum of `app.db`, and
+`diskHeadroomBytes` should stay **above** it — the alarm's real meaning is "you
+are within one roll of trouble".
+
+⚠ The per-org quota (`maxDbMb`, invariant 10) measures the `app.db` file alone.
+An org's true footprint on this volume is about twice what the quota counts.
 ## Load harness + the memory model (2026-08-24, `scripts/loadtest.mjs`)
 
 ```
