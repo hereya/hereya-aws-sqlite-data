@@ -28,6 +28,11 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 - **Isolation**: per-app in-flight cap (429) + global cap; ATTACH/DETACH/`VACUUM INTO`/
   write-PRAGMAs rejected; org/app pairs revalidated against the registry on EVERY request
   (defense in depth — the API never trusts its caller).
+- **The databases' own disk is encrypted at rest** (root EBS volume, AWS-managed `aws/ebs` key),
+  matching the replica bucket — which had been encrypted all along, so until 2026-08-25 the copy
+  that travels was protected while the original was not. Size and encryption are both stated by
+  the launch template (`rootVolumeGb`, default 30 GB); no customer-managed key is wired in, on
+  purpose — see invariant 14 in CLAUDE.md.
 - **App lifecycle is runtime**: adding an app = a DynamoDB registry row (`org_id`,
   `sk=app#<appId>`, `status=active`) — discovered by poll, `POST /admin/sync`, or
   request-path hot-add (restore-before-first-query). Never a CDK redeploy.
