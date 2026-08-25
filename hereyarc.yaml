@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.26
+version: 0.1.27
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -49,6 +49,10 @@ parameters:
     description: "Seuil d'alerte sur la mémoire disponible de la VM des bases, en octets (défaut 157286400, soit 150 Mo). C'est le plafond RÉEL du nombre d'apps qu'une instance peut tenir : litestream coûte environ 0,27 Mo de mémoire par base au-delà d'un socle fixe de ~65 Mo (mesuré de 20 à 1000 bases le 24/08/2026 avec scripts/loadtest.mjs ; la première lecture, 56,9 Mo divisés par 61, donnait « 0,93 Mo par base » et surestimait le coût marginal d'un facteur 3,4 — l'essentiel de ce total est un socle payé UNE fois) et l'instance par défaut n'a que 916 Mo — le mur est la mémoire, et il arrive bien avant n'importe quelle facture. Avant cette version, ce chiffre ne s'obtenait qu'en ouvrant une session SSM et en tapant `ps` à la main, autant dire jamais. L'alarme ne se déclenche PAS sur données manquantes, contrairement à ses voisines : une absence ici veut dire que le battement s'est arrêté, et l'alarme de battement le dit déjà — deux alertes pour un seul incident, c'est du bruit. Monter le seuil si l'instance est plus grosse."
     mandatory: false
     default: "157286400"
+  diskHeadroomBytes:
+    description: "Seuil d'alerte sur l'espace disque libre de la VM des bases, en octets (défaut 1610612736, soit 1,5 Gio). C'est la TROISIÈME ressource de la machine, et la seule qu'elle ne sait jamais reprendre : l'éviction rend un fil et de la mémoire, mais l'app évincée GARDE son fichier, et les bases des clients supprimés ne s'effacent pas non plus — cette courbe ne fait que monter. Un volume plein, c'est SQLITE_FULL sur les écritures de TOUTES les orgs à la fois, et jusqu'à cette version aucun instrument ne pouvait le voir venir : le battement bat, la mémoire est libre, les fils vont bien, CloudFront sert du 200, tout reste vert jusqu'à la première erreur. Mesuré en production le 25/08/2026 : volume de 8,5 Go déjà à 52 %, 4,14 Go libres, dont 2,10 Go de bases — et ces 2,10 Go ne sont pas ce que la taille des bases laisse croire, seuls 726 Mo sont des fichiers app.db, les 1,37 Go restants sont les répertoires de préparation locaux de litestream (~1,9x les bases qu'ils répliquent). À ~0,5 Go par mois de croissance, 1,5 Gio laisse environ trois mois pour agrandir le volume gp3 (opération en ligne) de façon délibérée. Comme sa jumelle mémoire, l'alarme ne se déclenche PAS sur données manquantes : une absence ici veut dire que le battement s'est arrêté, et cette alarme-là le dit déjà."
+    mandatory: false
+    default: "1610612736"
   amiId:
     description: "AMI of the database VM. Pinned by default to a specific AL2023 arm64 image of eu-west-1, so that an ordinary deploy NEVER replaces the instance (a replacement = ~60s with no Data API for every org). Bump the pin — in lib/hereya-aws-sqlite-data-stack.ts — or pass an id here to move the OS deliberately. 'latest' restores auto-resolution of the newest AL2023 arm64 image at every deploy (and with it the surprise replacement); outside eu-west-1, 'latest' or a region-local id is required."
     mandatory: false

@@ -472,6 +472,18 @@ exports.handler = async (event) => {
       throw new Error(`invalid memoryHeadroomBytes: ${input("memoryHeadroomBytes", "157286400")}`);
     }
 
+    // Default 1.5 GiB. Measured on the production volume 2026-08-25: 8.5 GB
+    // total, 4.14 GB free, 2.10 GB of it the database directory — the disk is
+    // already HALF FULL, which is not what anyone would have guessed from the
+    // size of the databases (726 MB of app.db across 61 apps). Growth is ~0.5
+    // GB/month over the four months this VM has served customers, so 1.5 GiB of
+    // headroom is roughly three months of warning: enough to grow the gp3
+    // volume (an online operation) deliberately rather than at 3am.
+    const diskHeadroomBytes = Number(input("diskHeadroomBytes", "1610612736"));
+    if (!Number.isFinite(diskHeadroomBytes) || diskHeadroomBytes <= 0) {
+      throw new Error(`invalid diskHeadroomBytes: ${input("diskHeadroomBytes", "1610612736")}`);
+    }
+
     const heartbeatAlarm = new cloudwatch.Alarm(this, "HeartbeatAlarm", {
       alarmName: `${this.stackName}-heartbeat`,
       alarmDescription:
@@ -548,6 +560,50 @@ exports.handler = async (event) => {
     });
     memoryAlarm.addAlarmAction(new cwActions.SnsAction(alertTopic));
     memoryAlarm.addOkAction(new cwActions.SnsAction(alertTopic));
+
+    // Disk headroom — the third resource, and the only one that cannot be
+    // recovered by the machine itself.
+    //
+    // Eviction defends the other two: an idle app leaves the litestream config,
+    // freeing a thread and ~0.46 MB of RSS. It deliberately does NOT delete the
+    // file, so no eviction has ever returned a single byte of disk. Databases of
+    // deleted customers are not removed either. Disk is therefore the one curve
+    // that only goes up.
+    //
+    // What it looks like when it ends: `SQLITE_FULL` on the writes of EVERY org
+    // at once — and until this metric existed, every other instrument stayed
+    // green right up to that first error. The heartbeat beats (the process is
+    // alive), memory is free, threads are fine, the Lambdas raise nothing while
+    // nobody writes, CloudFront serves 200s. Same shape as the other findings of
+    // this sweep: a layer no existing instrument could see, not an instrument
+    // read badly.
+    //
+    // Measured 2026-08-25 on the production volume, and it is not what the
+    // database sizes suggest: 2.10 GB in the database directory, of which only
+    // 726 MB is the app.db files — the other 1.37 GB is litestream's local
+    // staging directories (~1.9x the databases they replicate).
+    //
+    // NOT breaching on missing data, for the same reason as its memory twin:
+    // silence means the heartbeat stopped, and that alarm already pages.
+    const diskAlarm = new cloudwatch.Alarm(this, "DiskHeadroomAlarm", {
+      alarmName: `${this.stackName}-disk-headroom`,
+      alarmDescription:
+        "Free space on the Data API VM is low — every org's writes fail together when this volume fills, and eviction never frees disk (an evicted app keeps its file), so this number only ever falls",
+      metric: new cloudwatch.Metric({
+        namespace: "Dilaya/SqliteData",
+        metricName: "DiskAvailableBytes",
+        dimensionsMap: { stack: this.stackName },
+        statistic: "Minimum",
+        period: cdk.Duration.minutes(5),
+      }),
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      threshold: diskHeadroomBytes,
+      evaluationPeriods: 3,
+      datapointsToAlarm: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    diskAlarm.addAlarmAction(new cwActions.SnsAction(alertTopic));
+    diskAlarm.addOkAction(new cwActions.SnsAction(alertTopic));
 
     // The registry table is the piece that says WHERE each customer database
     // lives, and it was the one thing on this stack nothing watched. The

@@ -248,9 +248,25 @@ test("memory headroom is alarmed — the ceiling on how many apps fit", () => {
   });
 });
 
+test("disk headroom is alarmed — the resource eviction never gives back", () => {
+  // Eviction frees a thread and ~0.46 MB of RSS; the evicted app KEEPS its file,
+  // so no eviction has ever returned a byte of disk. A full volume is
+  // SQLITE_FULL on every org's writes at once, and until 2026-08-25 every other
+  // instrument stayed green right up to that first error.
+  template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+    MetricName: "DiskAvailableBytes",
+    Namespace: "Dilaya/SqliteData",
+    ComparisonOperator: "LessThanThreshold",
+    Statistic: "Minimum",
+    // Same reasoning as its memory twin: silence means the heartbeat stopped,
+    // and that alarm already pages.
+    TreatMissingData: "notBreaching",
+  });
+});
+
 test("every alarm notifies, in both directions", () => {
   const list = Object.values(template.findResources("AWS::CloudWatch::Alarm"));
-  assert.equal(list.length, 5);
+  assert.equal(list.length, 6);
   for (const alarm of list) {
     assert.ok((alarm.Properties.AlarmActions ?? []).length >= 1, "alarm must notify");
     assert.ok((alarm.Properties.OKActions ?? []).length >= 1, "recovery must notify too");
