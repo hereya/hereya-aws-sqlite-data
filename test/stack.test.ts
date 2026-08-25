@@ -248,6 +248,36 @@ test("memory headroom is alarmed — the ceiling on how many apps fit", () => {
   });
 });
 
+test("the root volume size is OURS, not the AMI's default", () => {
+  // Until 2026-08-25 the launch template carried no blockDevices at all, so the
+  // ASG inherited the AMI's 8 GB root — a number nobody chose, live for four
+  // months. The device name is the load-bearing half: any name other than the
+  // AMI's own root device ADDS a second volume instead of resizing the root,
+  // which looks like it worked while the databases stay on the same 8 GB.
+  template.hasResourceProperties("AWS::EC2::LaunchTemplate", {
+    LaunchTemplateData: {
+      BlockDeviceMappings: [
+        {
+          DeviceName: "/dev/xvda",
+          Ebs: { VolumeSize: 30, VolumeType: "gp3", DeleteOnTermination: true },
+        },
+      ],
+    },
+  });
+});
+
+test("the root volume states its SIZE and nothing else", () => {
+  // Encryption is deliberately absent: flipping it here would rewrite the root
+  // volume of a database machine as a side effect of a sizing change. If that
+  // is ever wanted it gets its own decision, and this test should fail first.
+  const lt = Object.values(template.findResources("AWS::EC2::LaunchTemplate"))[0];
+  assert.ok(lt, "the launch template must exist");
+  const ebs = lt.Properties.LaunchTemplateData.BlockDeviceMappings[0].Ebs;
+  assert.equal(ebs.Encrypted, undefined, "encryption must not ride along on a sizing commit");
+  assert.equal(ebs.Iops, undefined, "IOPS is left to the snapshot's own value");
+  assert.equal(ebs.Throughput, undefined, "throughput is left to the snapshot's own value");
+});
+
 test("disk headroom is alarmed — the resource eviction never gives back", () => {
   // Eviction frees a thread and ~0.46 MB of RSS; the evicted app KEEPS its file,
   // so no eviction has ever returned a byte of disk. A full volume is

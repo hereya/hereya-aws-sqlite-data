@@ -79,7 +79,21 @@ runbook; this file is the working-agreement layer for agents.
     auto-resolution
     (surprise roll included); an id is region-scoped, so the default is refused outside
     `PINNED_AMI_REGION` rather than producing an ASG that can't launch. With this, the ONLY things
-    that touch the production databases are a new service and a bumped pin — both deliberate.
+    that touch the production databases are a new service, a bumped pin, and a changed
+    `rootVolumeGb` (invariant 13) — all three deliberate.
+13. **The root volume size is ours, not the AMI's.** Until 2026-08-25 the launch template carried
+    **no `blockDevices` at all**, so the ASG silently inherited the image's own 8 GB root: a number
+    nobody chose, live for four months. Same shape as the AMI before it was pinned — a value we
+    were subject to rather than one we own, and left implicit a future pin bump could have changed
+    the disk size on its own. It now comes from `rootVolumeGb` (default 30 GB, from the sizing law
+    in "What an app actually costs on disk"). Two things are load-bearing: the device name **must**
+    be the AMI's own root (`/dev/xvda` on AL2023 arm64) — any other name ADDS a volume instead of
+    resizing the root, which looks like it worked while the databases stay on 8 GB — and the
+    mapping states the **size only**, leaving type/IOPS/throughput/encryption to the snapshot, so
+    that a sizing change never rewrites a database machine's root volume as a side effect. Both are
+    pinned by `test/stack.test.ts` (each verified to fail without its fix). Changing the value rolls
+    the instance, which is also what applies it; nothing to do on the box, since cloud-init runs
+    `growpart` and the root is XFS.
 
 ## Working on it
 

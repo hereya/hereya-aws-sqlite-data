@@ -404,6 +404,29 @@ exports.handler = async (event) => {
       }),
     );
 
+    // Root volume size. Until 2026-08-25 this was not set AT ALL: the launch
+    // template carried no blockDevices, so the ASG silently inherited the AMI's
+    // own 8 GB root — a number nobody chose, running in production for four
+    // months. Same class of problem as the AMI before it was pinned (invariant
+    // 12): a value we were SUBJECT TO rather than one we own. Left implicit, a
+    // future AMI bump could change the disk size on its own.
+    //
+    // The default comes from the sizing law measured in t_7f06618a3f17:
+    //   disk needed ~= 3x total database bytes + ~2.3 GB of OS
+    // Today that is 726 MB of databases -> 4.5 GB, which the old 8 GB did hold;
+    // 30 GB buys roughly an order of magnitude of growth for ~2 USD/month.
+    //
+    // ⚠ Changing this rolls the instance (new launch template version, ~60 s
+    // with no Data API) — which is also what APPLIES the new size. Nothing to
+    // do on the box: cloud-init runs `growpart` and the root is XFS, so the
+    // partition and filesystem extend themselves on the next boot.
+    const rootVolumeGb = Number(input("rootVolumeGb", "30"));
+    if (!Number.isInteger(rootVolumeGb) || rootVolumeGb < 8 || rootVolumeGb > 16384) {
+      throw new Error(
+        `invalid rootVolumeGb: ${input("rootVolumeGb", "30")} (expected a whole number of GB, 8..16384)`,
+      );
+    }
+
     const launchTemplate = new ec2.LaunchTemplate(this, "LaunchTemplate", {
       machineImage: this.resolveMachineImage(input("amiId", PINNED_AMI_ID).trim()),
       instanceType: new ec2.InstanceType(instanceType),
@@ -412,6 +435,25 @@ exports.handler = async (event) => {
       userData,
       requireImdsv2: true,
       associatePublicIpAddress: true,
+      // The device name MUST be the AMI's own root device (`/dev/xvda` on
+      // AL2023 arm64) — any other name ADDS a second volume instead of resizing
+      // the root, which would look like it worked while the databases stayed on
+      // the same 8 GB.
+      //
+      // Only the SIZE is stated. Volume type, IOPS, throughput and encryption
+      // are deliberately left to the snapshot's own values (gp3 / 3000 / 125 /
+      // unencrypted): this change is about owning the size, and quietly
+      // flipping encryption here would rewrite the root volume of a database
+      // machine as a side effect of a sizing commit.
+      blockDevices: [
+        {
+          deviceName: "/dev/xvda",
+          volume: ec2.BlockDeviceVolume.ebs(rootVolumeGb, {
+            volumeType: ec2.EbsDeviceVolumeType.GP3,
+            deleteOnTermination: true,
+          }),
+        },
+      ],
       // Spot-ness lives in the ASG's MixedInstancesPolicy below (a launch
       // template with InstanceMarketOptions conflicts with mixed instances).
       // no keyPair: SSM Session Manager only (spec §3)
