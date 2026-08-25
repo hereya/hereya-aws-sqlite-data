@@ -69,10 +69,21 @@ export const WRITE_STATS_PARTITION = "_writestats";
 export const OBSERVING_SINCE_KEY = "_since";
 
 export interface WriteStat {
-  /** Epoch ms of the last statement that changed this database. */
+  /** Epoch ms of the last statement that CHANGED this database; 0 = never. */
   lastWriteMs: number;
   /** Statements that changed it since this row was created. */
   writes: number;
+  /**
+   * Epoch ms of the last ACCESS of any kind — a read counts; 0 = never seen.
+   *
+   * A different question from `lastWriteMs`, and the two must never be
+   * conflated: writes decide WHO is an eviction candidate, this decides who is
+   * still in use and must be spared. Storing it here rather than in `AppSync`
+   * is the whole point of `t_3bdea3eeebb6` — the in-memory mark did not
+   * survive an instance replacement, so after every deploy the guard that
+   * reads it was blind until each app was touched again.
+   */
+  lastTouchMs: number;
 }
 
 /** `<orgId>/<appId>` — the sort key, and the in-memory map key. */
@@ -80,28 +91,50 @@ export function statKey(orgId: string, appId: string): string {
   return `${orgId}/${appId}`;
 }
 
+/** What was last persisted for a key — the pair, because either half can move. */
+export interface FlushedMark {
+  lastWriteMs: number;
+  lastTouchMs: number;
+}
+
+/** The persisted shape of one entry, for comparison. */
+export function markOf(stat: WriteStat): FlushedMark {
+  return { lastWriteMs: stat.lastWriteMs, lastTouchMs: stat.lastTouchMs };
+}
+
 /**
  * Which entries changed since the last flush.
  *
  * Pure, so the flush policy is testable without DynamoDB. Only apps that were
- * actually written are flushed, so the write cost is proportional to real
- * activity rather than to the number of apps we host — which is the whole point
- * of the exercise.
+ * actually USED are flushed, so the write cost is proportional to real activity
+ * rather than to the number of apps we host — which is the whole point of the
+ * exercise.
+ *
+ * ⚠️ BOTH halves are compared. Comparing only `lastWriteMs` (which is what this
+ * did before touches were persisted) would silently never flush an app that is
+ * read and never written — precisely the app the touch mark exists for.
  */
 export function pendingSince(
   stats: ReadonlyMap<string, WriteStat>,
-  flushedAt: ReadonlyMap<string, number>
+  flushedAt: ReadonlyMap<string, FlushedMark>
 ): string[] {
   const out: string[] = [];
   for (const [key, stat] of stats) {
-    if (flushedAt.get(key) !== stat.lastWriteMs) out.push(key);
+    const mark = flushedAt.get(key);
+    if (
+      mark === undefined ||
+      mark.lastWriteMs !== stat.lastWriteMs ||
+      mark.lastTouchMs !== stat.lastTouchMs
+    ) {
+      out.push(key);
+    }
   }
   return out;
 }
 
 export class WriteStats {
   private readonly stats = new Map<string, WriteStat>();
-  private readonly flushed = new Map<string, number>();
+  private readonly flushed = new Map<string, FlushedMark>();
   private readonly client: DynamoDBClient | null;
   private readonly tableName: string;
   private readonly now: () => number;
@@ -132,12 +165,42 @@ export class WriteStats {
   record(orgId: string, appId: string, changed: number): void {
     if (changed <= 0) return;
     const key = statKey(orgId, appId);
+    const at = this.now();
     const prev = this.stats.get(key);
     if (prev) {
-      prev.lastWriteMs = this.now();
+      prev.lastWriteMs = at;
       prev.writes += 1;
+      // A write IS an access. `ensureServed` has already stamped it on the way
+      // in, so this is belt-and-braces — but it costs one assignment and it
+      // removes any need to reason about which of the two ran first.
+      prev.lastTouchMs = at;
     } else {
-      this.stats.set(key, { lastWriteMs: this.now(), writes: 1 });
+      this.stats.set(key, { lastWriteMs: at, writes: 1, lastTouchMs: at });
+    }
+  }
+
+  /**
+   * The OTHER hot path: someone used this app, for anything, reads included.
+   *
+   * Same contract as `record` — a single `Map` write, no I/O, nothing that can
+   * throw — because it runs inside `ensureServed`, which every statement passes
+   * through before any SQL executes. Making this durable per call would mean a
+   * DynamoDB write for every read of every customer site; it is persisted by
+   * the same background flush as the write counter instead, and 5-minute
+   * resolution against a threshold measured in days is not a distinction that
+   * can matter.
+   *
+   * ⚠️ It must NOT invent a write. A touch-only entry keeps `lastWriteMs: 0`,
+   * which `idleMsFor` reports as null — otherwise reading an app would make it
+   * look freshly written and nothing would ever become evictable.
+   */
+  recordTouch(key: string, atMs?: number): void {
+    const at = atMs ?? this.now();
+    const prev = this.stats.get(key);
+    if (prev) {
+      prev.lastTouchMs = at;
+    } else {
+      this.stats.set(key, { lastWriteMs: 0, writes: 0, lastTouchMs: at });
     }
   }
 
@@ -146,10 +209,32 @@ export class WriteStats {
     return new Map([...this.stats].map(([k, v]) => [k, { ...v }]));
   }
 
-  /** Milliseconds since this app last changed; null when never seen. */
+  /**
+   * Milliseconds since this app last CHANGED; null when never seen writing.
+   *
+   * A touch-only entry (created by a read) carries `lastWriteMs: 0` and must
+   * answer null here, exactly as a missing entry does — reading an app is not
+   * evidence about writing it.
+   */
   idleMsFor(orgId: string, appId: string): number | null {
     const stat = this.stats.get(statKey(orgId, appId));
-    return stat ? this.now() - stat.lastWriteMs : null;
+    if (!stat || stat.lastWriteMs <= 0) return null;
+    return this.now() - stat.lastWriteMs;
+  }
+
+  /**
+   * Milliseconds since this app was last USED (reads included); null when it
+   * has never been seen.
+   *
+   * This is what survives an instance replacement, and the reason the whole
+   * change exists: `AppSync` keeps a live in-memory mark that is more precise,
+   * and falls back to this one for every app it has not been asked about since
+   * boot.
+   */
+  msSinceTouch(key: string): number | null {
+    const stat = this.stats.get(key);
+    if (!stat || stat.lastTouchMs <= 0) return null;
+    return Math.max(0, this.now() - stat.lastTouchMs);
   }
 
   /**
@@ -231,10 +316,16 @@ export class WriteStats {
           if (Number.isFinite(started) && started > 0) this.observingSince = started;
           continue;
         }
-        const lastWriteMs = Number(item.lastWriteMs?.N ?? "0");
-        if (!key || !Number.isFinite(lastWriteMs) || lastWriteMs <= 0) continue;
-        this.stats.set(key, { lastWriteMs, writes: Number(item.writes?.N ?? "0") });
-        this.flushed.set(key, lastWriteMs);
+        const rawWrite = Number(item.lastWriteMs?.N ?? "0");
+        const rawTouch = Number(item.lastTouchMs?.N ?? "0");
+        const lastWriteMs = Number.isFinite(rawWrite) && rawWrite > 0 ? rawWrite : 0;
+        const lastTouchMs = Number.isFinite(rawTouch) && rawTouch > 0 ? rawTouch : 0;
+        // A row is worth loading if EITHER half is usable. Requiring a write
+        // (which is what this did before touches existed) would drop exactly
+        // the read-only apps the touch mark is for.
+        if (!key || (lastWriteMs === 0 && lastTouchMs === 0)) continue;
+        this.stats.set(key, { lastWriteMs, writes: Number(item.writes?.N ?? "0"), lastTouchMs });
+        this.flushed.set(key, { lastWriteMs, lastTouchMs });
         loaded += 1;
       }
       startKey = res.LastEvaluatedKey;
@@ -258,14 +349,15 @@ export class WriteStats {
           new UpdateItemCommand({
             TableName: this.tableName,
             Key: { org_id: { S: WRITE_STATS_PARTITION }, sk: { S: key } },
-            UpdateExpression: "SET lastWriteMs = :t, writes = :w",
+            UpdateExpression: "SET lastWriteMs = :t, writes = :w, lastTouchMs = :u",
             ExpressionAttributeValues: {
               ":t": { N: String(stat.lastWriteMs) },
               ":w": { N: String(stat.writes) },
+              ":u": { N: String(stat.lastTouchMs) },
             },
           })
         );
-        this.flushed.set(key, stat.lastWriteMs);
+        this.flushed.set(key, markOf(stat));
         written += 1;
       } catch (err) {
         // Loud enough to notice, quiet enough never to matter to a request.
