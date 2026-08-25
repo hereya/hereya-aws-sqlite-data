@@ -440,17 +440,38 @@ exports.handler = async (event) => {
       // the root, which would look like it worked while the databases stayed on
       // the same 8 GB.
       //
-      // Only the SIZE is stated. Volume type, IOPS, throughput and encryption
-      // are deliberately left to the snapshot's own values (gp3 / 3000 / 125 /
-      // unencrypted): this change is about owning the size, and quietly
-      // flipping encryption here would rewrite the root volume of a database
-      // machine as a side effect of a sizing commit.
+      // Size and encryption are stated; IOPS and throughput are left to the
+      // snapshot's own values (3000 / 125).
+      //
+      // ENCRYPTED AT REST since 2026-08-25. This volume carries the `app.db` of
+      // every app of every org, and it was the asymmetry that made the gap
+      // obvious: the S3 replica has always been encrypted (`S3_MANAGED`, the
+      // ReplicaBucket above), so the travelling COPY of customer data was
+      // protected while the original was not.
+      //
+      // The key is the account's AWS-managed `aws/ebs`, reached by leaving
+      // `kmsKey` unset — and that choice is load-bearing, not laziness. Its key
+      // policy grants Encrypt/GenerateDataKey/CreateGrant to EVERY principal in
+      // the account acting `ViaService: ec2.<region>.amazonaws.com`, which is
+      // what lets the Auto Scaling service-linked role launch from it with no
+      // extra grant. A CUSTOMER-MANAGED key would need that grant written
+      // explicitly, and getting it wrong does not degrade anything — the ASG
+      // simply cannot launch, which on this singleton is a total outage of
+      // every org's databases. So no CMK parameter is offered here on purpose.
+      //
+      // Verified before shipping (2026-08-25): a throwaway t4g.micro launched
+      // from this very pinned AMI with an encrypted 30 GB root reached
+      // `running`, proving the snapshot -> encrypted-root conversion works in
+      // this account and region. Encryption-by-default is OFF account-wide, and
+      // no encrypted volume had ever existed here, so nothing about this path
+      // could be assumed from prior art.
       blockDevices: [
         {
           deviceName: "/dev/xvda",
           volume: ec2.BlockDeviceVolume.ebs(rootVolumeGb, {
             volumeType: ec2.EbsDeviceVolumeType.GP3,
             deleteOnTermination: true,
+            encrypted: true,
           }),
         },
       ],

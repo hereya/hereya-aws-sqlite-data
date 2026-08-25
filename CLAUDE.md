@@ -94,6 +94,22 @@ runbook; this file is the working-agreement layer for agents.
     pinned by `test/stack.test.ts` (each verified to fail without its fix). Changing the value rolls
     the instance, which is also what applies it; nothing to do on the box, since cloud-init runs
     `growpart` and the root is XFS.
+14. **The root volume is encrypted, with the AWS-MANAGED key, and that choice is load-bearing.**
+    This disk carries the `app.db` of every app of every org. Until 2026-08-25 it was NOT encrypted
+    while the S3 replica always has been (`S3_MANAGED`) — so the travelling copy of customer data
+    was protected and the original was not. Encryption now comes from `encrypted: true` with
+    `kmsKey` left **unset**, which selects the account's `aws/ebs`. Its key policy grants
+    `Encrypt`/`GenerateDataKey`/`CreateGrant` to every principal in the account acting
+    `ViaService: ec2.<region>.amazonaws.com`, which is exactly what lets the Auto Scaling
+    service-linked role launch from it with no extra grant. A **customer-managed key would need
+    that grant written by hand**, and getting it wrong degrades nothing — the ASG simply cannot
+    launch, which on this singleton is a total outage of every org's databases. That is why no CMK
+    parameter is offered, and why a test fails if one appears. Verified empirically before
+    shipping: encryption-by-default is OFF account-wide and **no encrypted volume had ever existed
+    in this account**, so nothing could be assumed from prior art — a throwaway t4g.micro launched
+    from the pinned AMI with an encrypted 30 GB root reached `running`, then was terminated.
+    ⚠ It protects the physical medium and any copied snapshot; it does NOT protect against an
+    application-level read or a compromised AWS credential.
 
 ## Working on it
 

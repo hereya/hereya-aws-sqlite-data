@@ -266,14 +266,27 @@ test("the root volume size is OURS, not the AMI's default", () => {
   });
 });
 
-test("the root volume states its SIZE and nothing else", () => {
-  // Encryption is deliberately absent: flipping it here would rewrite the root
-  // volume of a database machine as a side effect of a sizing change. If that
-  // is ever wanted it gets its own decision, and this test should fail first.
+test("the root volume is encrypted at rest", () => {
+  // This disk carries the app.db of every app of every org. The S3 replica has
+  // always been encrypted, so until 2026-08-25 the travelling COPY of customer
+  // data was protected while the original was not.
   const lt = Object.values(template.findResources("AWS::EC2::LaunchTemplate"))[0];
   assert.ok(lt, "the launch template must exist");
   const ebs = lt.Properties.LaunchTemplateData.BlockDeviceMappings[0].Ebs;
-  assert.equal(ebs.Encrypted, undefined, "encryption must not ride along on a sizing commit");
+  assert.equal(ebs.Encrypted, true, "the databases' own disk must be encrypted at rest");
+});
+
+test("encryption uses the AWS-managed key — no customer-managed key is wired in", () => {
+  // Load-bearing, not laziness. `aws/ebs` grants use to every principal in the
+  // account acting via EC2, which is what lets the Auto Scaling service-linked
+  // role launch from it with no explicit grant. A CMK needs that grant written
+  // by hand, and getting it wrong does not degrade anything — the ASG simply
+  // cannot launch, which on this singleton is a total outage of every org's
+  // databases. If a CMK is ever wanted, this test should fail first.
+  const lt = Object.values(template.findResources("AWS::EC2::LaunchTemplate"))[0];
+  assert.ok(lt, "the launch template must exist");
+  const ebs = lt.Properties.LaunchTemplateData.BlockDeviceMappings[0].Ebs;
+  assert.equal(ebs.KmsKeyId, undefined, "leaving KmsKeyId unset is what selects aws/ebs");
   assert.equal(ebs.Iops, undefined, "IOPS is left to the snapshot's own value");
   assert.equal(ebs.Throughput, undefined, "throughput is left to the snapshot's own value");
 });
