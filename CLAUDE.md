@@ -432,9 +432,17 @@ So the sizing law, which nothing stated before:
                                               the previous one lives out its window)
 
 **The consequence worth remembering is about ROLLS, not writes.** Every instance
-replacement writes a fresh full-size snapshot for every app at once, so a roll
-transiently costs another ~1x the fleet's total database bytes. Today that is
-~700 MB against 4.65 GB free, comfortable. It scales with total database bytes
+replacement writes fresh full-size snapshots for every app at once.
+
+**Measured live on the 0.1.171 roll (2026-08-25 11:47), by the instrument this
+very work added** — the first time this could be watched at all. The boot line
+reported 34.5% used (5.57 GB free); twenty minutes later the metric read 50.6%
+(4.20 GB). **A roll costs ~1.37 GB against 726 MB of databases, i.e. ~1.9x the
+fleet's database bytes, not ~1x** — because the snapshot is written more than
+once per app during the post-restore settle (the big app produced two 680 MB
+files on each of the two boots observed). That is the number to size the volume
+with, and it is consistent with the ~3x peak above (703 MB database + 1.36 GB of
+snapshots = 2.9x for that app). It scales with total database bytes
 and not with app count, so the number to watch is the sum of `app.db`, and
 `diskHeadroomBytes` should stay **above** it — the alarm's real meaning is "you
 are within one roll of trouble".
