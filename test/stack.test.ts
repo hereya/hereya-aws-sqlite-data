@@ -424,3 +424,42 @@ test("exports the consumer env contract", () => {
   assert.ok(raw.includes("dynamodb:PutItem"));
   assert.ok(raw.includes("dynamodb:Scan")); // layer-sync sweep (connector)
 });
+
+// The gateway that serves EVERY customer database had no access log at all
+// (t_dataapi_access_log): 20 087 requests in 24 h, 2 of them 5xx, and nothing
+// anywhere said which app, which route, or why — only a counter saying "two".
+// Its two sibling APIs (connector, landing) both log; this one, the layer where
+// a failure means "a customer's data call failed", was the blind one.
+test("the Data API stage writes an access log that says WHICH call failed and WHY", () => {
+  const stages = template.findResources("AWS::ApiGatewayV2::Stage");
+  const entries = Object.values(stages);
+  assert.equal(entries.length, 1, "exactly one (default) stage");
+  const settings = entries[0]!.Properties.AccessLogSettings;
+  assert.ok(settings, "the stage MUST have access log settings — its 5xx are unattributable without them");
+  assert.ok(settings.DestinationArn, "access log needs a destination log group");
+  const format = JSON.parse(settings.Format as string);
+  // The fields that answer WHAT failed and WHY, not just how many.
+  for (const field of [
+    "requestId",
+    "routeKey",
+    "status",
+    "integrationStatus",
+    "integrationErrorMessage",
+    "sourceIp",
+  ]) {
+    assert.ok(format[field], `access log format must carry ${field}`);
+  }
+});
+
+// Retention is a cost decision, not an accident: ~20 000 lines a day on a
+// gateway whose logs are only ever read to explain a 5xx the metric window has
+// already surfaced. Anything longer is paid for and never read.
+test("the Data API access log group retains for one week, and is destroyed with the stack", () => {
+  const stages = template.findResources("AWS::ApiGatewayV2::Stage");
+  const dest = Object.values(stages)[0]!.Properties.AccessLogSettings.DestinationArn;
+  const logicalId = (dest["Fn::GetAtt"] as [string, string])[0];
+  const group = template.findResources("AWS::Logs::LogGroup")[logicalId];
+  assert.ok(group, `access log destination ${logicalId} must be a log group in this stack`);
+  assert.equal(group.Properties.RetentionInDays, 7);
+  assert.equal(group.DeletionPolicy, "Delete");
+});

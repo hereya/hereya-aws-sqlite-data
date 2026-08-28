@@ -51,6 +51,15 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
   (`INSUFFICIENT_DATA → OK`, `lib/heartbeat-relay/announce.js`), or each deploy that creates alarms
   would send one "recovered" per alarm; the per-alarm wording lives in `format.js`, so a registry
   throttle is never announced as a dead heartbeat.
+- **Access log on the gateway stage** (`HttpApiAccessLogs`, 7-day retention): one JSON line per
+  request with `routeKey`/`status`/`integrationStatus`/`integrationErrorMessage`/`sourceIp`/
+  `requestId`. Same field set as the connector's API. The alarms above count failures; this is the
+  only place that *names* one — an `integrationStatus` of `-` on a 5xx means the request never
+  reached the VM, which is a different fault from one the VM answered. Added 2026-08-28: this
+  gateway serves every app's database of every org and was the last of the three without it, so its
+  5xx were unattributable by construction (20 087 requests/24 h, 2 of them 5xx, nothing to say
+  which). Retention is short on purpose — these lines are only read to explain a 5xx a metric window
+  already surfaced.
 
 ## HTTP API (all routes IAM-authorized)
 
