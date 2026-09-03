@@ -1,0 +1,25 @@
+name: Hereya setup
+description: Install Node + hereya-cli and log in to Hereya cloud.
+inputs:
+  hereya-token:
+    description: Hereya cloud token (an org/repo secret, e.g. secrets.HEREYA_TOKEN).
+    required: true
+  node-version:
+    description: Node.js version to set up.
+    required: false
+    default: "22"
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Install hereya CLI
+      shell: bash
+      run: npm install -g hereya-cli
+
+    - name: Login to Hereya cloud
+      shell: bash
+      run: hereya login --token "${{ inputs.hereya-token }}"

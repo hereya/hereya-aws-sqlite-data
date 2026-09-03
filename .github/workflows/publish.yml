@@ -1,0 +1,75 @@
+name: Publish to Hereya registry
+
+# Registers <name>@<version> (both read from hereyarc.yaml) in the Hereya
+# registry — the same `hereya publish` a developer runs locally, executed here
+# with the org's HEREYA_TOKEN so a publish never depends on a developer's local
+# Hereya login (that login expires; on 2026-09-03 it stalled an approved rollout
+# mid-chain until someone re-ran `hereya login` on the Mac).
+#
+# `hereya publish` sends METADATA only: package name/version, the repository
+# URL, the commit, and a sha256 of `git archive HEAD`. The Hereya executor
+# builds from that commit at deploy time. So this job needs no build, no
+# node_modules, no toolchain — only the checkout at the released commit.
+#
+# Publishing does NOT deploy anything. The package reaches production only when
+# the connector's hereya.yaml pin is bumped and a connector release is cut.
+#
+# Triggers: a GitHub release whose tag is `v<version>` (must equal
+# hereyarc.yaml's version), or a manual dispatch (version defaults to
+# hereyarc.yaml — e.g. to retry a failed publish of the same version).
+# Nothing runs without one of those explicit gestures.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish. Must equal hereyarc.yaml's version. Defaults to it if blank."
+        required: false
+
+# Never let two publishes race; let an in-flight one finish.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Resolve & verify version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # hereyarc.yaml is the source of truth for the published name + version.
+          rc_field() {
+            grep -E "^$1:" hereyarc.yaml | head -1 \
+              | sed -E "s/^$1:[[:space:]]*//; s/[\"']//g" | tr -d '[:space:]'
+          }
+          PKG_NAME="$(rc_field name)"
+          PKG_VERSION="$(rc_field version)"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            WANT="${GITHUB_REF_NAME#v}"
+          else
+            WANT="${{ inputs.version }}"
+            WANT="${WANT#v}"
+            [ -z "$WANT" ] && WANT="$PKG_VERSION"
+          fi
+          if [ "$PKG_VERSION" != "$WANT" ]; then
+            echo "::error::Release tag 'v${WANT}' does not match hereyarc.yaml version '${PKG_VERSION}'. Bump hereyarc.yaml (or retag) so they match."
+            exit 1
+          fi
+          echo "Publishing ${PKG_NAME}@${PKG_VERSION} from $(git rev-parse --short HEAD)"
+
+      - uses: ./.github/actions/hereya-setup
+        with:
+          hereya-token: ${{ secrets.HEREYA_TOKEN }}
+
+      # Metadata-only registration of this commit; the executor builds it later.
+      - name: Publish to Hereya registry
+        shell: bash
+        run: hereya publish

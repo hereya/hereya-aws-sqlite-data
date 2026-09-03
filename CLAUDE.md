@@ -128,7 +128,14 @@ runbook; this file is the working-agreement layer for agents.
   schema (a too-old global cdk silently no-ops with a schema-mismatch notice).
 - Deploy for dev: `AWS_PROFILE=<p> AWS_REGION=eu-west-1 STACK_NAME=<name> autoDelete=true
   npx cdk deploy` — with `autoDelete=true`, `cdk destroy` removes bucket + table too.
-- Release: bump `hereyarc.yaml` version → commit → tag `v<version>` → push → `hereya publish`.
+- Release: bump `hereyarc.yaml` version → PR → merge → **GitHub release `v<version>`** (the tag
+  must equal the `hereyarc.yaml` version). `.github/workflows/publish.yml` then runs
+  `hereya publish` with the org's `HEREYA_TOKEN` — no local Hereya login involved (a local
+  `hereya publish` still works as a fallback; a failed publish of the same version is retried via
+  the workflow's manual dispatch). `hereya publish` sends metadata only (repository URL, commit,
+  sha256 of `git archive HEAD`) — nothing is built in CI; the Hereya executor builds at deploy
+  time. **Publishing ≠ deploying**: the package reaches prod only once the connector's
+  `hereya.yaml` pin is bumped and a connector release is cut.
 
 ## Observed behaviors (dev acceptance, 2026-07-02)
 
