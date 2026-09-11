@@ -1,0 +1,38 @@
+name: CI
+
+# Ce dépôt n'avait pas de garde pré-fusion : `publish.yml` ne tourne qu'à la
+# release, donc rien ne relisait une PR. Le seuil des 220 lignes est le premier
+# à s'y installer.
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+      - "!main"
+
+permissions:
+  contents: read
+
+jobs:
+  enforce-line-limit:
+    # Le seuil des 220 lignes, arrêté par Jonatan et répliqué depuis hereya-cloud.
+    # Le dépôt est à ZÉRO fichier au-dessus de la limite : le garde balaie donc
+    # l'ARBRE ENTIER, pas seulement les fichiers modifiés. C'est plus simple et
+    # ça ne peut pas être contourné par un fichier qu'une PR ne touche pas.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Aucun fichier .ts/.tsx au-dessus de 220 lignes
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            lines=$(wc -l < "$f" | tr -d " ")
+            if [ "$lines" -gt 220 ]; then
+              echo "::error file=$f,line=221::$f fait $lines lignes, la limite est 220."
+              fail=1
+            fi
+          done < <(git ls-files '*.ts' '*.tsx')
+          if [ "$fail" -eq 0 ]; then
+            echo "OK — $(git ls-files "*.ts" "*.tsx" | wc -l | tr -d " ") fichiers, aucun au-dessus de 220 lignes."
+          fi
+          exit $fail
