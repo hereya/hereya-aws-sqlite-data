@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { call, DEFAULT_REGISTRY, startTestService, type TestService } from "../helpers.ts";
+import { call, startTestService, type TestService } from "../../helpers.ts";
 
 let svc: TestService;
 
@@ -15,12 +15,6 @@ after(async () => {
 const A1 = { org_id: "org-a", app_id: "app-1" };
 const A2 = { org_id: "org-a", app_id: "app-2" };
 const B1 = { org_id: "org-b", app_id: "app-1" };
-
-test("health", async () => {
-  const res = await call(svc.baseUrl, "/health");
-  assert.equal(res.status, 200);
-  assert.equal(res.body.status, "ok");
-});
 
 test("typed round-trip: create, insert, select", async () => {
   const create = await call(svc.baseUrl, "/query", {
@@ -74,23 +68,6 @@ test("update reports numberOfRecordsUpdated", async () => {
   assert.equal(res.body.numberOfRecordsUpdated, 1);
 });
 
-test("multi-statement script works without params, rejected with params", async () => {
-  const ok = await call(svc.baseUrl, "/query", {
-    ...A2,
-    sql: "CREATE TABLE t (x TEXT); CREATE INDEX ix ON t(x); INSERT INTO t VALUES ('a');",
-  });
-  assert.equal(ok.status, 200, JSON.stringify(ok.body));
-  assert.equal(ok.body.numberOfRecordsUpdated, 1);
-
-  const bad = await call(svc.baseUrl, "/query", {
-    ...A2,
-    sql: "INSERT INTO t VALUES (:x); INSERT INTO t VALUES (:x);",
-    params: [{ name: "x", value: { stringValue: "y" } }],
-  });
-  assert.equal(bad.status, 400);
-  assert.equal(bad.body.error.code, "BAD_REQUEST");
-});
-
 test("apps are isolated: same table name, different files", async () => {
   await call(svc.baseUrl, "/query", { ...B1, sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, secret TEXT)" });
   await call(svc.baseUrl, "/query", {
@@ -102,19 +79,6 @@ test("apps are isolated: same table name, different files", async () => {
   assert.deepEqual(fromA.body.records[0][0], { stringValue: "widget" });
   const fromB = await call(svc.baseUrl, "/query", { ...B1, sql: "SELECT secret FROM items" });
   assert.deepEqual(fromB.body.records[0][0], { stringValue: "org-b-only" });
-});
-
-test("unknown / inactive / cross pairs are denied fail-closed", async () => {
-  for (const pair of [
-    { org_id: "org-a", app_id: "nope" },
-    { org_id: "org-nope", app_id: "app-1" },
-    { org_id: "org-a", app_id: "app-old" }, // inactive
-    { org_id: "org-b", app_id: "app-2" }, // app-2 belongs to org-a only
-  ]) {
-    const res = await call(svc.baseUrl, "/query", { ...pair, sql: "SELECT 1" });
-    assert.equal(res.status, 403, JSON.stringify(res.body));
-    assert.equal(res.body.error.code, "CROSS_ORG_DENIED");
-  }
 });
 
 test("ATTACH and write-PRAGMA are rejected", async () => {
@@ -234,48 +198,4 @@ test("query timeout kills only the offending app's in-flight work", async () => 
   // the app recovers on a fresh worker
   const recovered = await call(svc.baseUrl, "/query", { ...A1, sql: "SELECT COUNT(*) AS c FROM items" });
   assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
-});
-
-test("registry hot-reload: newly added app becomes servable, removed app is denied", async () => {
-  const before = await call(svc.baseUrl, "/query", { org_id: "org-c", app_id: "fresh", sql: "SELECT 1" });
-  assert.equal(before.status, 403);
-
-  svc.setRegistry([...DEFAULT_REGISTRY, { org_id: "org-c", app_id: "fresh", status: "active" }]);
-  const after = await call(svc.baseUrl, "/query", { org_id: "org-c", app_id: "fresh", sql: "SELECT 1" });
-  assert.equal(after.status, 200, JSON.stringify(after.body));
-});
-
-test("oversized results are rejected with RESULT_TOO_LARGE", async () => {
-  const small = await startTestService({ maxResponseBytes: 1000 });
-  try {
-    await call(small.baseUrl, "/query", { ...A1, sql: "CREATE TABLE big (s TEXT)" });
-    await call(small.baseUrl, "/query", {
-      ...A1,
-      sql: "INSERT INTO big VALUES (:s)",
-      params: [{ name: "s", value: { stringValue: "z".repeat(5000) } }],
-    });
-    const res = await call(small.baseUrl, "/query", { ...A1, sql: "SELECT s FROM big" });
-    assert.equal(res.status, 413);
-    assert.equal(res.body.error.code, "RESULT_TOO_LARGE");
-  } finally {
-    await small.close();
-  }
-});
-
-test("per-app in-flight cap returns 429", async () => {
-  const capped = await startTestService({ maxInflightPerApp: 1, sqlTimeoutMs: 2000 });
-  try {
-    const bomb = call(capped.baseUrl, "/query", {
-      ...A1,
-      sql: "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM r) SELECT MAX(x) FROM r",
-    });
-    await new Promise((r) => setTimeout(r, 200)); // let the bomb occupy the slot
-    const throttled = await call(capped.baseUrl, "/query", { ...A1, sql: "SELECT 1" });
-    assert.equal(throttled.status, 429, JSON.stringify(throttled.body));
-    assert.equal(throttled.body.error.code, "THROTTLED");
-    const bombRes = await bomb;
-    assert.equal(bombRes.status, 408);
-  } finally {
-    await capped.close();
-  }
 });
