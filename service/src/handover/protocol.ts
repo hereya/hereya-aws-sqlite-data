@@ -73,6 +73,14 @@ export async function announceWarming(
   opts: { instanceId: string },
 ): Promise<HandoverRecord | null> {
   const now = deps.now ?? (() => Date.now());
+  // ORDER IS LOAD-BEARING: read the baseline BEFORE announcing. Announcing
+  // first opens a window in which the departing instance could observe us and
+  // publish its report, which we would then read AS the baseline — and wait
+  // for ever for a newer one that nobody will write. Reading first can only
+  // fail the other way: a report published in between supersedes our baseline
+  // and is accepted, and since that instance never saw our announcement it
+  // reports `dirtyUnknown`, so the replacement re-restores everything. Slow,
+  // never wrong.
   const baseline = await getHandover(deps);
   await putWarming(deps, { instanceId: opts.instanceId, atMs: now() });
   log({ event: "warming-announced", baselineSeq: baseline?.seq ?? 0 });
@@ -164,6 +172,13 @@ export async function awaitHandover(
  * `seq` is read-then-incremented rather than derived from a clock, so a
  * backwards clock jump on this machine cannot produce a report its successor
  * mistakes for an old one.
+ *
+ * The write is deliberately NOT conditional on `seq`. Read-then-write races
+ * only if two instances publish at once, and only a DEPARTING instance ever
+ * publishes: the ASG holds one, and during a handover the replacement has not
+ * begun draining — it is the one waiting. A condition here would buy nothing
+ * and would add a failure branch on the path of a process that is already
+ * dying, which is the worst place to add one.
  */
 export async function publishHandover(
   deps: HandoverDeps,

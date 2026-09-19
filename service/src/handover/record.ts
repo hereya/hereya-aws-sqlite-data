@@ -75,6 +75,11 @@ type Item = Record<string, { S?: string; N?: string; L?: unknown[]; BOOL?: boole
 
 function parseHandover(item: Item): HandoverRecord | null {
   if (!item) return null;
+  // No usable `seq` — a malformed item, or one written by a format that
+  // predates the counter — reads as NO RECORD. That is the safe direction:
+  // "no record" means the replacement has no baseline, so the first report it
+  // then sees counts, and meanwhile it waits rather than starting on a report
+  // it cannot order.
   const seq = Number(item.seq?.N ?? "");
   if (!Number.isFinite(seq) || seq <= 0) return null;
   const list = Array.isArray(item.dirtyApps?.L) ? item.dirtyApps.L : [];

@@ -22,7 +22,7 @@ import {
   publishHandover,
 } from "../service/src/handover/protocol.ts";
 import { supersedes, type HandoverRecord } from "../service/src/handover/record.ts";
-import { dirtySince, splitAppKey } from "../service/src/handover/dirty.ts";
+import { dirtySince, snapshotWrites, splitAppKey } from "../service/src/handover/dirty.ts";
 import type { WriteStat } from "../service/src/write-stats/stat.ts";
 
 /** A DynamoDB stand-in holding items by sort key, or failing on demand. */
@@ -47,7 +47,7 @@ function fakeDdb(opts: { fail?: boolean } = {}) {
   };
 }
 
-const stat = (lastWriteMs: number): WriteStat => ({ lastWriteMs, writes: 1, lastTouchMs: lastWriteMs });
+const stat = (writes: number, lastWriteMs = 0): WriteStat => ({ lastWriteMs, writes, lastTouchMs: lastWriteMs });
 
 test("ordering is by seq, so no two machines' clocks are ever compared", () => {
   const baseline: HandoverRecord = { seq: 7, fromInstanceId: "i-old", atMs: 9_999_999, dirtyApps: [] };
@@ -161,15 +161,38 @@ test("publishing never throws, so a dying instance still dies cleanly", async ()
   assert.equal(ok, false, "it reports failure rather than raising it into the shutdown path");
 });
 
-test("the catch-up list includes a write that landed DURING the warm-up", () => {
-  const windowStart = 1_000; // what observeWarming returned, on this machine's clock
+test("the catch-up list is COUNTED, not timed — no clock can change the answer", () => {
+  // The window opens: snapshot what the counter holds.
   const stats = new Map<string, WriteStat>([
-    ["org/before", stat(900)], // written before we started restoring — our copy has it
-    ["org/during", stat(1_500)], // written while we restored — our copy is STALE
-    ["org/at-boundary", stat(1_000)], // same millisecond — conservative: include
-    ["org/never", { lastWriteMs: 0, writes: 0, lastTouchMs: 2_000 }], // read-only
+    // A row seeded from DynamoDB by a PREVIOUS instance, whose lastWriteMs is
+    // on that machine's clock and is deliberately in the FUTURE of ours. A
+    // timestamp comparison would call it dirty; its count never moves, so it
+    // is not.
+    ["org/seeded-future", stat(4, 9_999_999_999)],
+    ["org/quiet", stat(7, 500)],
+    ["org/busy", stat(2, 500)],
+    ["org/read-only", stat(0, 0)],
   ]);
-  assert.deepEqual(dirtySince(stats, windowStart), ["org/at-boundary", "org/during"]);
+  const snapshot = snapshotWrites(stats);
+
+  // …the window runs. Only these two actually change the database.
+  stats.set("org/busy", stat(3, 1_500));
+  stats.set("org/new-app", stat(1, 1_400)); // first written during the window
+  // A read-only app is touched but never written: its count stays 0.
+  stats.set("org/read-only", { lastWriteMs: 0, writes: 0, lastTouchMs: 9_000 });
+  // And a local clock that STEPPED BACKWARDS during the window: the write is
+  // real and stamped earlier than the window opened. Timed logic would drop
+  // it — the data-loss direction. Counted logic keeps it.
+  stats.set("org/quiet", stat(8, 1));
+
+  assert.deepEqual(dirtySince(snapshot, stats), ["org/busy", "org/new-app", "org/quiet"]);
+});
+
+test("an app that vanished from the counter is not resurrected into the list", () => {
+  const stats = new Map<string, WriteStat>([["org/gone", stat(3)], ["org/stays", stat(1)]]);
+  const snapshot = snapshotWrites(stats);
+  stats.delete("org/gone"); // the app was dropped while we drained
+  assert.deepEqual(dirtySince(snapshot, stats), []);
 });
 
 test("app keys round-trip, and a malformed one is refused rather than guessed", () => {
