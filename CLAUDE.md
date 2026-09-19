@@ -258,7 +258,15 @@ cold start reads the file — `register` has no such option. Identical to the sh
 `litestreamSyncIntervalMs=1000`; it would only matter if that parameter were changed. The
 housekeeping cadences (levels, L0 retention, snapshots) are store-wide and apply either way.
 
-Proven on S3 at 100 databases before this was written (`t_dbmove_p0_trial`,
+**Tried for real inside the service** (trial stack `dilayadev-lssock-trial`, linux/arm64 under
+systemd, S3, destroyed the same hour): 100 apps seeded 6 at a time → **99 `socket-applied`, 0
+`socket-fallback`, ONE `replicate-started`, 0 `replicate-exited`** — where the bounce would have
+restarted replication 99 times. All 100 prefixes reached S3. A registry row deleted →
+`socket-applied {removed: 1}`, the database gone from `litestream list`, the file deleted after.
+`systemctl restart` → the daemon comes back on the config file with its socket, 99 listed, no
+`bind` error on the stale socket file.
+
+The daemon-to-daemon protocol had been proven on S3 at 100 databases beforehand (`t_dbmove_p0_trial`,
 `scripts/acceptance/db-move-trial.mjs`): 0 lost writes, bystanders undisturbed. The pid is the
 witness in `service/test/integration/litestream-socket.test.ts`: it must not change when a
 database joins or leaves, and must change when the socket is unusable.
