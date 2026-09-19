@@ -136,6 +136,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
         manager,
         litestream,
         serves: (orgId, appId) => sync.isServed(orgId, appId),
+        concurrency: cfg.bootRestoreConcurrency,
       },
     });
     // From here on WE are the instance that may have to hand over next.

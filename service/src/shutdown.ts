@@ -1,7 +1,6 @@
 // Graceful shutdown: on SIGTERM or a Spot interruption notice, stop taking
 // requests (503 → callers retry politely), roll back open transactions,
-// checkpoint every served app's WAL, give litestream a final sync window,
-// then exit. Narrows the loss window on clean interruptions to ~zero.
+// give litestream a final sync window, then exit. Narrows the loss window on clean interruptions to ~zero.
 import type { Server } from "node:http";
 import type { Config } from "./config.ts";
 import type { AppManager } from "./apps.ts";
@@ -140,14 +139,16 @@ export class Shutdown {
     // 2. Let in-flight requests finish (bounded), while new ones get 503.
     await new Promise((r) => setTimeout(r, this.cfg.drainMs));
 
-    // 3. Checkpoint each served app so the final litestream sync ships everything.
-    for (const app of this.sync.servedApps) {
-      try {
-        await this.manager.workerFor(app.orgId, app.appId).control("checkpoint", this.cfg.txOpTimeoutMs);
-      } catch (err) {
-        log({ event: "checkpoint-failed", orgId: app.orgId, appId: app.appId, message: (err as Error).message });
-      }
-    }
+    // 3. (REMOVED 2026-09-19, t_handover_catchup_parallel) There used to be a
+    // `PRAGMA wal_checkpoint(TRUNCATE)` per served app here, one after another.
+    // TRUNCATE needs every reader gone, and litestream holds a read transaction
+    // on each database it replicates: measured at 100 apps, EVERY one blocked
+    // its full 5 s and failed. 500 s of drain, cut by systemd's SIGKILL at 90 s
+    // — so steps 4 and 4-bis below never ran: no final sync window, no clean
+    // litestream stop, no handover report (the 132 s of the 19/09 prod roll).
+    // It also bought nothing: litestream ships WAL frames, it does not need
+    // the WAL folded into the main file. Do not bring a per-app step back into
+    // this path — everything here is outage, and must not grow with the fleet.
 
     // 4. Final replication window, then stop litestream cleanly.
     await new Promise((r) => setTimeout(r, this.cfg.litestreamSyncIntervalMs * 2));

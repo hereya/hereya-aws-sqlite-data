@@ -101,6 +101,7 @@ export async function runHandoverGate(cfg: Config, deps: GateDeps): Promise<void
     return;
   }
   log({ event: "catchup-start", apps: keys.length, unknown });
+  const startedAt = Date.now();
   const done = await catchUp(deps.catchUpDeps, keys);
-  log({ event: "catchup-done", requested: keys.length, restored: done.length });
+  log({ event: "catchup-done", requested: keys.length, restored: done.length, ms: Date.now() - startedAt });
 }

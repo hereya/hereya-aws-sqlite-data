@@ -195,7 +195,7 @@ node scripts/acceptance/noisy-neighbor.mjs <stackName>            # flood one ap
 - **Never** add S3 lifecycle rules or versioning to the replica bucket, and never mount the
   db files over the network — Litestream owns retention; only the Data API touches the files.
 - **Spot loss window**: ≈ the litestream sync interval (1s default) on hard kills; clean
-  interruptions drain (503 + checkpoint + final sync) to ~zero.
+  interruptions drain (503 + final sync) to ~zero.
 - Capacity rebalance stays OFF (two concurrent litestream writers on one generation path
   would corrupt it). Future overlap-style replacement requires the documented DDB lease.
 - **`cdk destroy` caveat (mitigated)**: stack deletion terminates the instance without a
