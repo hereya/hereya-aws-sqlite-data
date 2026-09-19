@@ -1,37 +1,46 @@
-// The two halves of the handover, and the one place its safety argument lives.
+// The two sides of the handover, and the one place its safety argument lives.
 //
 // THE SEQUENCE (t_vm_zero_cut_handover):
 //
 //   1. The replacement boots and restores every app from S3 — a READ. Two
 //      instances reading the same replica do not disturb each other, so this
-//      can happen while the old one is still serving. It is also where the
+//      happens while the old one is still serving. It is also where the
 //      measured 45 s goes (23 s machine + bootstrap, 21.5 s restore), which is
-//      the whole reason this design removes the outage: the expensive part
-//      leaves the critical path entirely.
-//   2. The replacement does NOT start litestream and does NOT register in
-//      Cloud Map. It is warm and invisible.
-//   3. The old one drains: stops serving, rolls back open transactions,
+//      why this design removes the outage: the expensive part leaves the
+//      critical path entirely.
+//   2. The replacement ANNOUNCES it is warming, does NOT start litestream and
+//      does NOT register in Cloud Map. It is warm and invisible.
+//   3. The old one observes that announcement and dates it ON ITS OWN CLOCK —
+//      that instant is the start of the window whose writes it must report.
+//   4. The old one drains: stops serving, rolls back open transactions,
 //      checkpoints, and stops litestream — `Litestream.stop()` waits for the
-//      child to EXIT. Only then does it publish the handover record.
-//   4. The replacement sees that record, re-restores just the apps written
-//      during the window, starts litestream, and registers.
+//      child to EXIT. Only then does it publish the handover report.
+//   5. The replacement sees the report, re-restores just the apps it names,
+//      starts litestream, and registers.
 //
-// The visible cut is therefore step 3's deregistration to step 4's
-// registration — seconds — instead of a full boot.
+// The visible cut is step 4's deregistration to step 5's registration —
+// seconds — instead of a full boot.
 //
 // WHAT THIS IS NOT: a lease granting the right to write. A fencing token only
 // protects when the resource validates it, and litestream → S3 validates
-// nothing. The safety here comes from ORDER, and from the fact that the stop is
-// observed before it is announced.
+// nothing. The safety comes from ORDER, and from the stop being observed
+// before it is announced.
 //
 // THE ONE UNCOVERED CASE, stated plainly: an old instance that is HUNG — not
 // dead (a dead process writes nothing, which is the safe case), but alive with
-// litestream still replicating and unable to publish. No record arrives, and
-// `awaitHandover` eventually times out. What the caller does then is a policy
-// decision with no risk-free answer, which is why it is returned as a distinct
-// outcome rather than decided here.
+// litestream still replicating and unable to publish. No report arrives and
+// `awaitHandover` times out. What to do then is a policy decision with no
+// risk-free answer, which is why it is returned as a distinct outcome rather
+// than decided here.
 import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { getHandover, isFresh, putHandover, type HandoverRecord } from "./record.ts";
+import {
+  getHandover,
+  getWarming,
+  putHandover,
+  putWarming,
+  supersedes,
+  type HandoverRecord,
+} from "./record.ts";
 
 export interface HandoverDeps {
   client: DynamoDBClient;
@@ -52,34 +61,75 @@ export type HandoverOutcome =
   | { reason: "timeout" };
 
 /**
- * Wait for proof that the previous instance stopped writing.
+ * Step 2, on the replacement: say that warming has begun, and take the
+ * BASELINE the wait will be measured against.
  *
- * `warmStartedAt` must be the instant THIS instance began warming up: any
- * record at or before it describes an older roll (see `isFresh`).
+ * Returning the baseline from the same call is deliberate — it makes it
+ * impossible to wait against a baseline read at some other moment, which is
+ * the mistake the ordering rule exists to prevent.
+ */
+export async function announceWarming(
+  deps: HandoverDeps,
+  opts: { instanceId: string },
+): Promise<HandoverRecord | null> {
+  const now = deps.now ?? (() => Date.now());
+  const baseline = await getHandover(deps);
+  await putWarming(deps, { instanceId: opts.instanceId, atMs: now() });
+  log({ event: "warming-announced", baselineSeq: baseline?.seq ?? 0 });
+  return baseline;
+}
+
+/**
+ * Step 3, on the DEPARTING instance: has a replacement announced itself, and
+ * is it a different machine from us?
+ *
+ * Returns the instant of THIS observation, on the caller's own clock, or null
+ * when there is nothing to observe yet. The caller keeps the FIRST non-null
+ * answer: that is the start of the window, and taking a later one would drop
+ * writes that landed before it.
+ */
+export async function observeWarming(
+  deps: HandoverDeps,
+  opts: { selfInstanceId: string },
+): Promise<number | null> {
+  const now = deps.now ?? (() => Date.now());
+  const warming = await getWarming(deps);
+  if (warming === null || warming.instanceId === opts.selfInstanceId) return null;
+  return now();
+}
+
+/**
+ * Step 5, on the replacement: wait for proof that the previous instance
+ * stopped writing.
+ *
+ * `baseline` is what `announceWarming` returned. Ordering is by `seq`, so no
+ * two machines' clocks are ever compared — see record.ts.
  *
  * Returns `timeout` rather than throwing, and rather than deciding: the caller
- * owns what an unproven stop means, because the two possible policies —
- * refuse to serve, or take over anyway — trade availability against the hung
- * instance above, and that trade belongs to the operator.
+ * owns what an unproven stop means, because the two possible policies — refuse
+ * to serve, or take over anyway — trade availability against the hung instance
+ * above, and that trade belongs to the operator.
  */
 export async function awaitHandover(
   deps: HandoverDeps,
-  opts: { warmStartedAt: number; timeoutMs: number },
+  opts: { baseline: HandoverRecord | null; timeoutMs: number },
 ): Promise<HandoverOutcome> {
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const deadline = now() + opts.timeoutMs;
-  log({ event: "await-start", timeoutMs: opts.timeoutMs });
+  const startedAt = now();
+  const deadline = startedAt + opts.timeoutMs;
+  log({ event: "await-start", timeoutMs: opts.timeoutMs, baselineSeq: opts.baseline?.seq ?? 0 });
 
   for (;;) {
     const record = await getHandover(deps);
-    if (isFresh(record, opts.warmStartedAt)) {
+    if (supersedes(opts.baseline, record)) {
       log({
         event: "observed",
         from: record.fromInstanceId,
+        seq: record.seq,
         dirtyApps: record.dirtyApps.length,
         dirtyUnknown: record.dirtyUnknown === true,
-        waitedMs: now() - opts.warmStartedAt,
+        waitedMs: now() - startedAt,
       });
       return { reason: "handover", record };
     }
@@ -101,21 +151,28 @@ export async function awaitHandover(
 }
 
 /**
- * Announce the stop. Called by the departing instance AFTER litestream has
- * exited — never before, or the record would assert something untrue.
+ * Step 4, on the departing instance: announce the stop. Called AFTER
+ * litestream has exited — never before, or the report would assert something
+ * untrue.
  *
- * `dirtyApps` comes from the departing process's own in-memory write counter,
- * which is the only place that knows it. A caller that cannot produce the list
- * passes `null`, and the record says so: the replacement then re-restores
- * everything, which is slow but correct. Guessing "nothing changed" here would
+ * `dirtyApps` comes from this process's own in-memory write counter, which is
+ * the only place that knows it. A caller that could not establish the window
+ * passes `null`, and the report says so: the replacement then re-restores
+ * everything, which is slow but correct. Claiming "nothing changed" here would
  * be the one mistake in this file that silently serves stale customer data.
+ *
+ * `seq` is read-then-incremented rather than derived from a clock, so a
+ * backwards clock jump on this machine cannot produce a report its successor
+ * mistakes for an old one.
  */
 export async function publishHandover(
   deps: HandoverDeps,
   opts: { instanceId: string; dirtyApps: string[] | null },
 ): Promise<boolean> {
   const now = deps.now ?? (() => Date.now());
+  const previous = await getHandover(deps);
   const record: HandoverRecord = {
+    seq: (previous?.seq ?? 0) + 1,
     fromInstanceId: opts.instanceId,
     atMs: now(),
     dirtyApps: opts.dirtyApps ?? [],
@@ -124,6 +181,7 @@ export async function publishHandover(
   const ok = await putHandover(deps, record);
   log({
     event: ok ? "published" : "publish-gave-up",
+    seq: record.seq,
     dirtyApps: record.dirtyApps.length,
     dirtyUnknown: record.dirtyUnknown === true,
   });
