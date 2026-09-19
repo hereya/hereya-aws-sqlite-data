@@ -116,6 +116,7 @@ test("a TIMEOUT never reaches the catch-up — nothing is deleted on an unproven
     now: () => clock,
     sleep: async () => void (clock += 100),
     instanceId: "i-new",
+    baseline: null,
     servedKeys: () => ["org-a/app-1"],
     catchUpDeps: {
       manager: {

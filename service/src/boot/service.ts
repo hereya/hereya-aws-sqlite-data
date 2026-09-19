@@ -21,6 +21,8 @@ import { logDiskVolume } from "./disk-log.ts";
 import { startEvictionSweep, startRegistryPoller, startTxSweeper } from "./loops.ts";
 import { BootTimer, publishBootTiming } from "./timing.ts";
 import { runHandoverGate } from "../handover/gate.ts";
+import { announceWarming } from "../handover/protocol.ts";
+import type { HandoverRecord } from "../handover/record.ts";
 import { readInstanceId } from "../handover/instance-id.ts";
 import { WarmingWatcher } from "../handover/watcher.ts";
 import type { RunningService } from "./types.ts";
@@ -69,6 +71,21 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     msSinceTouch: (key) => writeStats.msSinceTouch(key),
   });
 
+  // 0-bis. ANNOUNCE THE WARM-UP — before the restore, and that order is the
+  // point. The announcement opens the window whose writes the departing
+  // instance will report; the restore below takes ~21.5 s on the measured
+  // fleet, and a write landing inside it is exactly the one our copy misses.
+  // Announcing after the restore would leave those writes outside the
+  // catch-up list AND outside our copy — stale data, silently.
+  let handoverForShutdown: { client: DynamoDBClient; tableName: string; instanceId: string } | null = null;
+  let handoverBaseline: HandoverRecord | null = null;
+  const handoverClient = cfg.handoverEnabled ? createHandoverClient(cfg) : null;
+  if (handoverClient !== null) {
+    const instanceId = (await readInstanceId()) ?? "";
+    handoverForShutdown = { client: handoverClient, tableName: cfg.registryTable, instanceId };
+    handoverBaseline = await announceWarming(handoverForShutdown, { instanceId });
+  }
+
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
   const servedAtBoot = await sync.bootRestoreAll();
   bootTimer.mark("restore");
@@ -101,13 +118,11 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   // Replicating before the predecessor has proved it stopped is the
   // dual-writer that terminate-before-launch exists to prevent.
   let watcher: WarmingWatcher | null = null;
-  let handoverForShutdown: { client: DynamoDBClient; tableName: string; instanceId: string } | null = null;
-  const handoverClient = cfg.handoverEnabled ? createHandoverClient(cfg) : null;
-  if (handoverClient !== null) {
-    const instanceId = (await readInstanceId()) ?? "";
-    const handoverDeps = { client: handoverClient, tableName: cfg.registryTable, instanceId };
+  if (handoverForShutdown !== null) {
+    const handoverDeps = handoverForShutdown;
     await runHandoverGate(cfg, {
       ...handoverDeps,
+      baseline: handoverBaseline,
       servedKeys: () => sync.servedApps.map((a) => appKeyOf(a.orgId, a.appId)),
       catchUpDeps: {
         manager,
@@ -118,11 +133,10 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     // From here on WE are the instance that may have to hand over next.
     watcher = new WarmingWatcher({
       deps: handoverDeps,
-      selfInstanceId: instanceId,
+      selfInstanceId: handoverDeps.instanceId,
       readStats: () => writeStats.snapshot(),
     });
     watcher.start(cfg.handoverWatchMs);
-    handoverForShutdown = handoverDeps;
   }
   bootTimer.mark("handover");
 

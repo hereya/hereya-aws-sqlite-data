@@ -10,7 +10,8 @@
 // package.
 import type { Config } from "../config.ts";
 import { catchUp, type CatchUpDeps } from "./catchup.ts";
-import { announceWarming, awaitHandover } from "./protocol.ts";
+import { awaitHandover } from "./protocol.ts";
+import type { HandoverRecord } from "./record.ts";
 import type { HandoverDeps } from "./protocol.ts";
 
 function log(event: Record<string, unknown>): void {
@@ -19,6 +20,16 @@ function log(event: Record<string, unknown>): void {
 
 export interface GateDeps extends HandoverDeps {
   instanceId: string;
+  /**
+   * What `announceWarming` returned — and it must have been called BEFORE the
+   * restore, not here. The announcement is what opens the window the departing
+   * instance reports on, so announcing after the restore would leave every
+   * write of those ~21.5 s outside the catch-up list: already missed by our
+   * copy, and never named as dirty. That is precisely the staleness this whole
+   * mechanism exists to prevent, so the baseline is passed IN rather than
+   * taken here — a gate that could announce for itself could announce late.
+   */
+  baseline: HandoverRecord | null;
   /** Every app this instance restored — the fallback list when the departing
    *  instance could not say which ones moved. */
   servedKeys: () => string[];
@@ -39,8 +50,7 @@ export interface GateDeps extends HandoverDeps {
  * decision is made on evidence rather than in the dark.
  */
 export async function runHandoverGate(cfg: Config, deps: GateDeps): Promise<void> {
-  const baseline = await announceWarming(deps, { instanceId: deps.instanceId });
-  const outcome = await awaitHandover(deps, { baseline, timeoutMs: cfg.handoverTimeoutMs });
+  const outcome = await awaitHandover(deps, { baseline: deps.baseline, timeoutMs: cfg.handoverTimeoutMs });
 
   if (outcome.reason === "timeout") {
     console.error(
