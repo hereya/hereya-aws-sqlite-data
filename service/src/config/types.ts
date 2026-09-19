@@ -72,6 +72,46 @@ export interface Config {
   /** How often the eviction sweep runs, ms. Nothing about it is urgent — the
    *  thing it reclaims accrues over days — so this is deliberately slow. */
   evictionSweepMs: number;
+  /** Hot handover on instance replacement (t_vm_zero_cut_handover).
+   *  OFF by default and never inferred: switching it on is what makes two
+   *  instances overlap, so an operator decides, the same way evictionIdleDays
+   *  and spotPercentage are decided. With it off, every call site behaves
+   *  exactly as before. */
+  handoverEnabled: boolean;
+  /**
+   * How long the replacement waits for proof that its predecessor stopped.
+   * On timeout it proceeds ANYWAY, loudly.
+   *
+   * ⚠️ 15 s, not minutes, and the reason is measured rather than guessed. With
+   * the ASG still terminating BEFORE launching, the predecessor is already
+   * gone when we boot, so nothing will ever publish and the timeout is not the
+   * exception — it is the GUARANTEED path. Every second here is then pure
+   * added outage: a live trial on 2026-09-19 with the first value (120 s) sat
+   * the whole two minutes before serving, which would have TRIPLED the ~60 s
+   * replacement gap the feature exists to remove.
+   *
+   * So this number is not "how long before we give up on a hung predecessor",
+   * it is "what a misconfiguration costs". The handover only pays for itself
+   * once the ASG overlaps instances, and the two must be switched on together.
+   */
+  handoverTimeoutMs: number;
+  /** How often the departing instance asks whether a replacement has announced
+   *  itself. Only the FIRST observation matters — it dates the window. */
+  handoverWatchMs: number;
+  /**
+   * How long after ITS OWN announcement the replacement keeps looking for a
+   * live predecessor's acknowledgement (handover/ack.ts). Five watcher ticks:
+   * long enough that one missed poll is not read as "nobody there" — which is
+   * the dangerous direction — and short enough that a real fleet's ~21 s
+   * restore has already absorbed it.
+   */
+  handoverAckMs: number;
+  /**
+   * The wait once a LIVE predecessor has acknowledged us. Long on purpose, and
+   * free: the predecessor is still serving for the whole of it. It covers the
+   * time CloudFormation takes to notice we are InService and terminate it.
+   */
+  handoverOverlapTimeoutMs: number;
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;

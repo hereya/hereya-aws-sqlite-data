@@ -1,4 +1,4 @@
-import type * as cdk from "aws-cdk-lib";
+import * as cdk from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import type { StackContext } from "./context.ts";
 
@@ -38,6 +38,27 @@ export function createInstanceRole(stack: cdk.Stack, ctx: StackContext): void {
   // is on the partition key itself, so this role still cannot touch a single
   // org or app row. That matters: the registry is the source of truth the
   // double control reads, and the data plane has no business writing to it.
+  // The handover records (service/src/handover/, t_vm_zero_cut_handover).
+  // Same shape and same reasoning as WriteStats below: PutItem, and ONLY into
+  // the fixed `_handover` partition, so this role still cannot write a single
+  // org or app row.
+  //
+  // ⚠️ It is PutItem, not UpdateItem, and that distinction cost a live trial:
+  // the handover writes whole records, the WriteStats grant covers UpdateItem
+  // alone, and the service SWALLOWS the failure by design (a dying instance
+  // must still die cleanly). So a missing grant here does not raise — it makes
+  // the whole feature a silent no-op. Found 2026-09-19 on a throwaway stack,
+  // verbatim: "is not authorized to perform: dynamodb:PutItem".
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "HandoverRecords",
+      actions: ["dynamodb:PutItem"],
+      resources: [table.tableArn],
+      conditions: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["_handover"] },
+      },
+    }),
+  );
   role.addToPolicy(
     new iam.PolicyStatement({
       sid: "WriteStats",
@@ -91,4 +112,25 @@ export function createInstanceRole(stack: cdk.Stack, ctx: StackContext): void {
     }),
   );
   artifact.grantRead(role);
+  // Release of the launch hook (handover only). The ASG is named by
+  // CloudFormation as `<stack>-Asg…`, and the ARN is written as a pattern
+  // rather than taken from the resource: the ASG depends on this role through
+  // the launch template, so referencing it here would be a cycle.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "HandoverLaunchHook",
+      actions: ["autoscaling:CompleteLifecycleAction"],
+      resources: [
+        `arn:aws:autoscaling:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:autoScalingGroup:*:autoScalingGroupName/${cdk.Aws.STACK_NAME}-*`,
+      ],
+    }),
+  );
+  // Describe* has no resource-level scoping in Auto Scaling; read-only.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "HandoverDescribeSelf",
+      actions: ["autoscaling:DescribeAutoScalingInstances"],
+      resources: ["*"],
+    }),
+  );
 }
