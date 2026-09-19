@@ -38,6 +38,27 @@ export function createInstanceRole(stack: cdk.Stack, ctx: StackContext): void {
   // is on the partition key itself, so this role still cannot touch a single
   // org or app row. That matters: the registry is the source of truth the
   // double control reads, and the data plane has no business writing to it.
+  // The handover records (service/src/handover/, t_vm_zero_cut_handover).
+  // Same shape and same reasoning as WriteStats below: PutItem, and ONLY into
+  // the fixed `_handover` partition, so this role still cannot write a single
+  // org or app row.
+  //
+  // ⚠️ It is PutItem, not UpdateItem, and that distinction cost a live trial:
+  // the handover writes whole records, the WriteStats grant covers UpdateItem
+  // alone, and the service SWALLOWS the failure by design (a dying instance
+  // must still die cleanly). So a missing grant here does not raise — it makes
+  // the whole feature a silent no-op. Found 2026-09-19 on a throwaway stack,
+  // verbatim: "is not authorized to perform: dynamodb:PutItem".
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "HandoverRecords",
+      actions: ["dynamodb:PutItem"],
+      resources: [table.tableArn],
+      conditions: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["_handover"] },
+      },
+    }),
+  );
   role.addToPolicy(
     new iam.PolicyStatement({
       sid: "WriteStats",

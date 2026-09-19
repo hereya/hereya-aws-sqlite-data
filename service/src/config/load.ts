@@ -92,7 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     evictionSweepMs: intEnv("EVICTION_SWEEP_MS", 3_600_000),
     // OFF unless explicitly switched on — see the type's comment.
     handoverEnabled: env.HANDOVER_ENABLED === "1" || env.HANDOVER_ENABLED === "true",
-    handoverTimeoutMs: intEnv("HANDOVER_TIMEOUT_MS", 120_000),
+    handoverTimeoutMs: intEnv("HANDOVER_TIMEOUT_MS", 15_000),
     handoverWatchMs: intEnv("HANDOVER_WATCH_MS", 2_000),
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),

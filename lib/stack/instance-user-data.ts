@@ -56,7 +56,7 @@ export function createUserData(stack: cdk.Stack, ctx: StackContext): void {
         // unreachable — a switch with no wire, which is how it shipped in the
         // first draft of the wiring.
         HANDOVER_ENABLED: input("handoverEnabled", "false"),
-        HANDOVER_TIMEOUT_MS: input("handoverTimeoutMs", "120000"),
+        HANDOVER_TIMEOUT_MS: input("handoverTimeoutMs", "15000"),
         HANDOVER_WATCH_MS: input("handoverWatchMs", "2000"),
         HEARTBEAT_ENABLED: "1",
         HEARTBEAT_DIMENSION: stack.stackName,
