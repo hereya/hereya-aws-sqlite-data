@@ -40,7 +40,8 @@ export class SyncState {
   /**
    * Serializes every mutation of the litestream config.
    *
-   * `bounce` rewrites the config file from a SNAPSHOT of the replicated set.
+   * `apply` rewrites the config file from a SNAPSHOT of the replicated set (and
+   * diffs against it — per-database over the control socket, or a full bounce).
    * Two callers overlapping — a request promoting an app while the eviction
    * sweep or the registry poll bounces — could therefore let the later write
    * land a config computed before the earlier change, leaving an app inside

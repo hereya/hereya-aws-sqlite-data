@@ -33,7 +33,7 @@ export function fakeLitestream(opts: { onBounce?: (apps: LitestreamApp[]) => Pro
     async restoreIfMissing(): Promise<RestoreOutcome> {
       return "restored";
     },
-    async bounce(apps: LitestreamApp[]) {
+    async apply(apps: LitestreamApp[]) {
       // Snapshot BEFORE any awaiting the hook does, exactly like the real
       // implementation writing the config file from its argument.
       const snapshot = apps.map((a) => a.appId).sort();

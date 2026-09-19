@@ -12,7 +12,7 @@ import type { SyncState } from "./state.ts";
 
 /**
  * Drop every app that has been quiet for `thresholdMs` from the litestream
- * config — one bounce for the whole batch, not one per app.
+ * config — one config change for the whole batch, not one per app.
  *
  * The plan is computed INSIDE the config lock, deliberately. A plan made
  * outside it can go stale in the microseconds before it is applied: a request
@@ -59,7 +59,7 @@ export async function evictIdle(
     const plan = planEviction(candidates, withServed, thresholdMs);
     if (plan.evict.length === 0) return plan;
     for (const key of plan.evict) state.replicated.delete(key);
-    await state.litestream.bounce(state.replicatedApps);
+    await state.litestream.apply(state.replicatedApps);
     log({
       event: "evicted",
       apps: plan.evict.length,

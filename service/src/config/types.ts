@@ -24,6 +24,11 @@ export interface Config {
   litestreamDisabled: boolean;
   litestreamBin: string;
   litestreamConfigPath: string;
+  /** Litestream's control socket — what lets ONE database join or leave the
+   *  running daemon without restarting it for all the others. Defaults to
+   *  `litestream.sock` beside the config file; `LITESTREAM_SOCKET_PATH=off`, or
+   *  a path too long for a unix socket, leaves it empty = every change bounces. */
+  litestreamSocketPath: string;
   replicaBaseUrl: string;
   litestreamSyncIntervalMs: number;
   litestreamRetention: string;

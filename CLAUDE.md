@@ -210,6 +210,59 @@ apps.** `test/shutdown-drain-scale.test.ts` and the concurrency test in
 `test/handover-catchup.test.ts` pin both; each was verified to fail first. And a trial stack
 that does not carry prod's app count measures nothing — seed it (`handover-scale.mjs seed`).
 
+## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
+
+Every section below that says "bounce" describes what a config change USED to cost: the config
+was rewritten and the single litestream process restarted, suspending replication ~1 s for
+**every** database on the VM — at each app creation, promotion, eviction and removal.
+
+Litestream 0.5.17 (the pinned binary) has a **control socket**. `buildConfig` now enables it
+(`socket: {enabled, path}`), and `Litestream.apply(apps)` — what the four callers use instead of
+`bounce` — diffs the wanted set against what the daemon was last told and touches ONLY what
+changed: `register -replica <url>` for a database that joins, `stop` then `unregister` for one
+that leaves (`service/src/litestream/control.ts`). `stop` "always waits for shutdown and final
+sync", so a removal is observed, not assumed. All three are idempotent
+(`already_registered` / `already_unregistered`, exit 0).
+
+What stays exactly as it was, on purpose:
+
+- **The config file is still written, first.** A cold start and the respawn-after-crash read it,
+  and it is what makes the fallback safe: whatever the socket did or did not do, a bounce
+  converges on the file.
+- **The bounce is the fallback**, not dead code: no socket configured, a socket command that
+  fails or times out (10 s — `stop` waits on S3), a daemon that never opened its socket (3 s),
+  or more than 32 changes at once (one ~1 s restart beats that many process spawns under the
+  config lock). Journal: `socket-applied {added, removed}` vs `socket-fallback {message}` —
+  **a fleet that logs `socket-fallback` regularly has silently gone back to the old cost.**
+- **`SyncState.withConfig`** still serializes decide + mutate + apply. The socket removes the
+  pause, not the race.
+- **Zero databases = no daemon.** With an empty list and a socket, 0.5.17 stays alive but logs
+  `level=ERROR msg="no databases specified"`, and any ERROR line flips `childHealthy` (hence
+  the heartbeat). So the first database starts the process and the last one stops it — nobody
+  else is there to disturb.
+
+Two things found by trying it, each pinned by a test verified to fail first:
+
+1. **The file must go AFTER litestream lets go.** `removeApp` and `doSync` used to delete the
+   local file and *then* reconfigure. `stop` closes the database and fails on a deleted one
+   (`ensure wal exists: disk I/O error`) — every removal would have fallen back to the bounce,
+   quietly. Order is now close executor → `apply` → delete, with the delete in a `finally`
+   (`service/test/unit/remove-order.test.ts`).
+2. **A unix socket path is capped (~104 bytes).** Past it the daemon dies on
+   `bind: invalid argument`. The path defaults to `litestream.sock` beside the config file
+   (`/etc/dilaya/`, already owned by the service user — so no infra change), and a path over
+   100 chars, or `LITESTREAM_SOCKET_PATH=off`, means "no socket", never a crash.
+
+⚠ A database added by `register` takes litestream's DEFAULT `sync-interval` (1 s) until the next
+cold start reads the file — `register` has no such option. Identical to the shipped
+`litestreamSyncIntervalMs=1000`; it would only matter if that parameter were changed. The
+housekeeping cadences (levels, L0 retention, snapshots) are store-wide and apply either way.
+
+Proven on S3 at 100 databases before this was written (`t_dbmove_p0_trial`,
+`scripts/acceptance/db-move-trial.mjs`): 0 lost writes, bystanders undisturbed. The pid is the
+witness in `service/test/integration/litestream-socket.test.ts`: it must not change when a
+database joins or leaves, and must change when the socket is unusable.
+
 ## One restore per app at a time (2026-09-19, `t_hotadd_restore_race`)
 
 Seeding the scale trial — 100 apps created 6 at a time — 6 answered **503** on their first
