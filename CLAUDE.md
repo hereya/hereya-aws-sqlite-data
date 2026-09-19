@@ -210,6 +210,26 @@ apps.** `test/shutdown-drain-scale.test.ts` and the concurrency test in
 `test/handover-catchup.test.ts` pin both; each was verified to fail first. And a trial stack
 that does not carry prod's app count measures nothing — seed it (`handover-scale.mjs seed`).
 
+## One restore per app at a time (2026-09-19, `t_hotadd_restore_race`)
+
+Seeding the scale trial — 100 apps created 6 at a time — 6 answered **503** on their first
+statement: `app could not be prepared: litestream restore failed … cannot restore, output path
+already exists and is not empty`. Two paths prepare a brand-new app: `ensureServed` (the
+request) and the registry reconcile `doSync`. The first had a per-app mutex; the second never
+looked at it. Both saw "no local file", both spawned `litestream restore`, and the slower one
+started after the faster had created the fresh db. Invariant 2 held (nothing is restored OVER a
+file), so no data was at risk — the cost was a 503 on a new app's first request, or a discarded
+reconcile pass. Without the error there was a quieter wrong answer too: the loser could report
+`restored` for a file the winner had just created `fresh`, putting a never-written app into
+the litestream config.
+
+The mutex now lives in `service/src/litestream/restore.ts` (`Restorer`, keyed by db path),
+**below every caller**, so a third path cannot forget it; the second caller gets the first
+one's outcome. `service/test/unit/restore-race.test.ts` stages the losing side with a stand-in
+binary and was verified to fail first with the verbatim error. The handover catch-up goes through the
+same call (it deletes the stale copy, then `restoreIfMissing`) — unaffected: it runs behind the
+gate, before anything serves, one task per distinct app.
+
 ## Boot-restore window (prod measurement, 2026-08-24)
 
 Measured on the instance the 0.1.19 deploy replaced (`i-0a5e2f9882637bdcf`, 10:15:28 → 10:16:40):
