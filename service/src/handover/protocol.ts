@@ -13,8 +13,8 @@
 //   3. The old one observes that announcement and dates it ON ITS OWN CLOCK —
 //      that instant is the start of the window whose writes it must report.
 //   4. The old one drains: stops serving, rolls back open transactions,
-//      checkpoints, and stops litestream — `Litestream.stop()` waits for the
-//      child to EXIT. Only then does it publish the handover report.
+//      gives litestream its final sync window, and stops it —
+//      `Litestream.stop()` waits for the child to EXIT. Only then does it publish the handover report.
 //   5. The replacement sees the report, re-restores just the apps it names,
 //      starts litestream, and registers.
 //

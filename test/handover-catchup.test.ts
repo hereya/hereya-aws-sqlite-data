@@ -132,3 +132,24 @@ test("a TIMEOUT never reaches the catch-up — nothing is deleted on an unproven
   });
   assert.equal(catchUpCalled, false, "a timeout must never delete a database");
 });
+
+test("the catch-up restores SEVERAL apps at once, bounded — never one by one, never all at once", async () => {
+  // Measured on prod 2026-09-19: 100 apps caught up one at a time took 105 s
+  // of a 227 s cut, where the boot restore does the same work in 22 s at
+  // 8-wide. Every second here is outage on the `predecessor-gone` path.
+  const root = mkdtempSync(join(tmpdir(), "catchup-"));
+  const keys = Array.from({ length: 20 }, (_, i) => `org-a/app-${i}`);
+  for (const k of keys) seedApp(root, "org-a", k.split("/")[1]!);
+  const d = deps(root);
+  let inFlight = 0;
+  let peak = 0;
+  const restoreIfMissing = async (app: { orgId: string; appId: string; dbPath: string }) => {
+    peak = Math.max(peak, ++inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    return d.catchUpDeps.litestream.restoreIfMissing(app);
+  };
+  const done = await catchUp({ ...d.catchUpDeps, litestream: { restoreIfMissing }, concurrency: 4 }, keys);
+  assert.equal(done.length, 20, "every app is still caught up");
+  assert.equal(peak, 4, "4 workers: more would spawn a litestream per app on a small VM, fewer is the serial outage");
+});

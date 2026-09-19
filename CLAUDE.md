@@ -169,6 +169,47 @@ runbook; this file is the working-agreement layer for agents.
 - **Spot reality check**: t4g Spot went unfulfillable across 2 AZs + 2 sizes in eu-west-1
   for >10 min — that's why the default is on-demand (`spotPercentage=0`); Spot is opt-in.
 
+## The handover AT PROD SCALE (2026-09-19, `t_handover_catchup_parallel`)
+
+Switching the handover on in prod cut the Data API for **227 s**; the trial stack had said ~17 s.
+The trial carried five databases, prod carries 100, and **both terms that blew up are per-app
+loops on the outage path**. Neither could show on a small fleet:
+
+1. **The catch-up re-restored one app at a time** — 100 apps, 105 s, where the boot restore does
+   the same work at 8-wide. It is now a bounded pool (`catchUp`, width =
+   `bootRestoreConcurrency`).
+2. **The DEPARTING instance never finished its drain.** `Shutdown.begin` asked every served app
+   for `PRAGMA wal_checkpoint(TRUNCATE)`, serially. TRUNCATE needs every reader gone and
+   litestream holds a read transaction on each database it replicates, so **every call blocked
+   its full 5 s and failed** (journal: one `checkpoint-failed` every 5.00 s). 100 apps = 500 s;
+   systemd's 90 s stop timeout SIGKILLed the service first — no final sync window, no clean
+   `litestream.stop()`, no write-stats flush, **no handover report**. The replacement therefore
+   waited for the ASG to drop the instance (the 132 s) and then treated all 100 apps as unknown.
+   The step is removed: litestream ships WAL frames and never needed the WAL folded in.
+   ⚠ This predates the handover: the step shipped long before it. Consistent with prod — the two
+   terminations on record (18/09 and 19/09) both took 122 s, and the 19/09 console shows the OS
+   powering off 92 s after the SIGTERM, i.e. systemd's stop timeout. Not proven further back.
+
+Measured on `dilayadev-handover-scale`, **100 seeded apps**, a statement per second as the probe
+(`scripts/acceptance/handover-scale.mjs`):
+
+| roll | what it exercises | cut |
+|---|---|---|
+| old drain → fixed service | the serial checkpoint on the departing side | ~66 s (from the ASG's terminate; the probe started late) |
+| fixed → fixed, 30 apps written through the roll | normal regime; catch-up 30 apps in 6.4 s | **19 s** |
+| fixed → fixed, ALL 100 apps written through the roll | worst catch-up: 100 apps in 23.1 s | **32 s** |
+| instance terminated (no overlap possible) | crash recovery: launch + boot + 15 s wait | 75 s |
+
+Every write the API acknowledged during those rolls was read back afterwards (1536 of 1536 on
+the 30-app roll). Two isolated 4 s timeouts followed the 19 s roll — the gateway's target cache,
+already seen on the first trial. What remains in the cut is fixed cost: `drainMs` (5 s), the
+final sync window (2 s), litestream start and Cloud Map registration.
+
+**The rule this leaves behind: nothing on the drain or the gate may loop `for … await` over the
+apps.** `test/shutdown-drain-scale.test.ts` and the concurrency test in
+`test/handover-catchup.test.ts` pin both; each was verified to fail first. And a trial stack
+that does not carry prod's app count measures nothing — seed it (`handover-scale.mjs seed`).
+
 ## Boot-restore window (prod measurement, 2026-08-24)
 
 Measured on the instance the 0.1.19 deploy replaced (`i-0a5e2f9882637bdcf`, 10:15:28 → 10:16:40):

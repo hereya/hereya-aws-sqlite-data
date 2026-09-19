@@ -13,7 +13,7 @@ import { join } from "node:path";
  * rewrites the entire database THROUGH the WAL, so the single statement that
  * frees space would briefly double the measured usage — the way out would
  * register as growth and keep the customer locked in. The WAL is a transient
- * buffer anyway (SQLite auto-checkpoints it, and shutdown folds it in), so the
+ * buffer anyway (SQLite auto-checkpoints it), so the
  * main file is both the stabler and the more honest number.
  *
  * The instance restores EVERY active app at boot (see AppSync.bootRestoreAll),
