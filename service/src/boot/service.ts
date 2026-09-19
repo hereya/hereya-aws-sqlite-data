@@ -2,7 +2,7 @@
 // bind the HTTP API → start litestream replication → background loops → ready.
 // Any restore failure aborts the boot — never serve partially restored.
 import type { Config } from "../config.ts";
-import { AppManager } from "../apps.ts";
+import { AppManager, appKeyOf } from "../apps.ts";
 import { CloudMapRegistration } from "../cloudmap.ts";
 import { Heartbeat } from "../heartbeat.ts";
 import { Limiter } from "../limits.ts";
@@ -15,10 +15,14 @@ import { WriteStats } from "../write-stats.ts";
 import { TxRegistry } from "../tx.ts";
 import { assertVecLoadable } from "../vec.ts";
 import { resolveWorkerPath, WorkerPool } from "../worker-host.ts";
-import { createOrgQuotaReader, createRegistry } from "./deps.ts";
+import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { createHandoverClient, createOrgQuotaReader, createRegistry } from "./deps.ts";
 import { logDiskVolume } from "./disk-log.ts";
 import { startEvictionSweep, startRegistryPoller, startTxSweeper } from "./loops.ts";
 import { BootTimer, publishBootTiming } from "./timing.ts";
+import { runHandoverGate } from "../handover/gate.ts";
+import { readInstanceId } from "../handover/instance-id.ts";
+import { WarmingWatcher } from "../handover/watcher.ts";
 import type { RunningService } from "./types.ts";
 import { seedWriteStats } from "./write-stats-boot.ts";
 
@@ -90,6 +94,38 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   const address = server.address();
   const port = address !== null && typeof address === "object" ? address.port : cfg.port;
 
+  // 4-bis. HOT HANDOVER (t_vm_zero_cut_handover) — off unless switched on.
+  //
+  // ⚠️ THE POSITION IS THE SAFETY PROPERTY: after the port binds (nothing
+  // routes here until Cloud Map registration) and BEFORE litestream starts.
+  // Replicating before the predecessor has proved it stopped is the
+  // dual-writer that terminate-before-launch exists to prevent.
+  let watcher: WarmingWatcher | null = null;
+  let handoverForShutdown: { client: DynamoDBClient; tableName: string; instanceId: string } | null = null;
+  const handoverClient = cfg.handoverEnabled ? createHandoverClient(cfg) : null;
+  if (handoverClient !== null) {
+    const instanceId = (await readInstanceId()) ?? "";
+    const handoverDeps = { client: handoverClient, tableName: cfg.registryTable, instanceId };
+    await runHandoverGate(cfg, {
+      ...handoverDeps,
+      servedKeys: () => sync.servedApps.map((a) => appKeyOf(a.orgId, a.appId)),
+      catchUpDeps: {
+        manager,
+        litestream,
+        serves: (orgId, appId) => sync.isServed(orgId, appId),
+      },
+    });
+    // From here on WE are the instance that may have to hand over next.
+    watcher = new WarmingWatcher({
+      deps: handoverDeps,
+      selfInstanceId: instanceId,
+      readStats: () => writeStats.snapshot(),
+    });
+    watcher.start(cfg.handoverWatchMs);
+    handoverForShutdown = handoverDeps;
+  }
+  bootTimer.mark("handover");
+
   // 5. continuous replication
   litestream.start(servedAtBoot);
   bootTimer.mark("litestream");
@@ -128,7 +164,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   logDiskVolume(cfg.dbDir);
 
-  const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry, cloudMap });
+  const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry, cloudMap, watcher, writeStats, handover: handoverForShutdown });
   shutdownRef = shutdown;
   if (opts.installSignalHandlers !== false) shutdown.install();
 
@@ -144,6 +180,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     stop: async () => {
       clearInterval(sweeper);
       clearInterval(poller);
+      watcher?.stop();
       if (evictionSweep) clearInterval(evictionSweep);
       heartbeat.stop();
       // Flush before dying: a clean stop should not throw away the interval's worth

@@ -9,6 +9,10 @@ import type { AppSync } from "./sync.ts";
 import type { CloudMapRegistration } from "./cloudmap.ts";
 import type { Litestream } from "./litestream.ts";
 import type { TxRegistry } from "./tx.ts";
+import type { WarmingWatcher } from "./handover/watcher.ts";
+import type { WriteStats } from "./write-stats.ts";
+import { dirtySince } from "./handover/dirty.ts";
+import { publishHandover, type HandoverDeps } from "./handover/protocol.ts";
 
 const IMDS_BASE = "http://169.254.169.254";
 
@@ -24,6 +28,10 @@ export class Shutdown {
   private readonly litestream: Litestream;
   private readonly txRegistry: TxRegistry;
   private readonly cloudMap: CloudMapRegistration | null;
+  private readonly watcher: WarmingWatcher | null;
+  /** Null when the handover is off — every call site then short-circuits. */
+  private readonly handover: (HandoverDeps & { instanceId: string }) | null;
+  private readonly writeStats: WriteStats | null;
   private draining = false;
   private spotTimer: NodeJS.Timeout | null = null;
 
@@ -35,6 +43,9 @@ export class Shutdown {
     litestream: Litestream;
     txRegistry: TxRegistry;
     cloudMap?: CloudMapRegistration | null;
+    watcher?: WarmingWatcher | null;
+    handover?: (HandoverDeps & { instanceId: string }) | null;
+    writeStats?: WriteStats | null;
   }) {
     this.cfg = opts.cfg;
     this.server = opts.server;
@@ -43,6 +54,9 @@ export class Shutdown {
     this.litestream = opts.litestream;
     this.txRegistry = opts.txRegistry;
     this.cloudMap = opts.cloudMap ?? null;
+    this.watcher = opts.watcher ?? null;
+    this.handover = opts.handover ?? null;
+    this.writeStats = opts.writeStats ?? null;
   }
 
   get isDraining(): boolean {
@@ -82,6 +96,26 @@ export class Shutdown {
     this.spotTimer.unref();
   }
 
+  /**
+   * Tell the replacement we have stopped, and which databases moved while it
+   * warmed up.
+   *
+   * The list comes from the snapshot the watcher took when it first saw the
+   * replacement announce itself, compared against the counter now — both read
+   * on THIS machine. No snapshot (no watcher, or it never saw anything) means
+   * we cannot delimit the window, so we say so: `null` publishes
+   * `dirtyUnknown` and the replacement re-restores everything. Slow, correct.
+   */
+  private async handOver(): Promise<void> {
+    if (!this.handover) return;
+    const snapshot = this.watcher?.windowSnapshot ?? null;
+    const dirty =
+      snapshot === null || this.writeStats === null
+        ? null
+        : dirtySince(snapshot, this.writeStats.snapshot());
+    await publishHandover(this.handover, { instanceId: this.handover.instanceId, dirtyApps: dirty });
+  }
+
   async begin(reason: string): Promise<void> {
     if (this.draining) return;
     this.draining = true;
@@ -118,6 +152,13 @@ export class Shutdown {
     // 4. Final replication window, then stop litestream cleanly.
     await new Promise((r) => setTimeout(r, this.cfg.litestreamSyncIntervalMs * 2));
     await this.litestream.stop();
+
+    // 4-bis. HAND OVER (t_vm_zero_cut_handover) — only ever AFTER the line
+    // above, because `stop()` waits for the litestream child to EXIT and the
+    // report asserts exactly that. Publishing earlier would assert something
+    // untrue and invite the replacement to start replicating while we still
+    // were. Everything here is best-effort: a dying process must still die.
+    await this.handOver();
 
     await this.manager.closeAll();
     this.server.close();

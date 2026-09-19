@@ -72,6 +72,20 @@ export interface Config {
   /** How often the eviction sweep runs, ms. Nothing about it is urgent — the
    *  thing it reclaims accrues over days — so this is deliberately slow. */
   evictionSweepMs: number;
+  /** Hot handover on instance replacement (t_vm_zero_cut_handover).
+   *  OFF by default and never inferred: switching it on is what makes two
+   *  instances overlap, so an operator decides, the same way evictionIdleDays
+   *  and spotPercentage are decided. With it off, every call site behaves
+   *  exactly as before. */
+  handoverEnabled: boolean;
+  /** How long the replacement waits for proof that its predecessor stopped.
+   *  On timeout it proceeds ANYWAY, loudly — which is what makes the flag safe
+   *  to switch on before the ASG changes: with terminate-before-launch the old
+   *  instance is already gone, so the wait always expires. */
+  handoverTimeoutMs: number;
+  /** How often the departing instance asks whether a replacement has announced
+   *  itself. Only the FIRST observation matters — it dates the window. */
+  handoverWatchMs: number;
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;
