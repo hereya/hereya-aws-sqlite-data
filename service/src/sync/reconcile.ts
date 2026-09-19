@@ -19,14 +19,23 @@ export async function removeApp(state: SyncState, orgId: string, appId: string):
   const wasReplicated = state.replicated.delete(key);
   await state.manager.removeApp(orgId, appId);
   try {
-    rmSync(dirname(state.manager.dbPath(orgId, appId)), { recursive: true, force: true });
+    // Only a REPLICATED app was in the config, so only its removal needs a
+    // bounce — dropping an unused app changes nothing litestream can see.
+    // BEFORE the file goes: litestream's per-database `stop` closes the
+    // database, which fails on a deleted file and would cost a full bounce.
+    if (wasReplicated) await state.withConfig(() => state.litestream.apply(state.replicatedApps));
+  } finally {
+    deleteLocal(state.manager.dbPath(orgId, appId), orgId, appId);
+  }
+  log({ event: "removed", orgId, appId, wasServed, wasReplicated });
+}
+
+function deleteLocal(dbPath: string, orgId: string, appId: string): void {
+  try {
+    rmSync(dirname(dbPath), { recursive: true, force: true });
   } catch (err) {
     log({ event: "remove-cleanup-failed", orgId, appId, message: (err as Error).message });
   }
-  // Only a REPLICATED app was in the config, so only its removal needs a
-  // bounce — dropping an unused app changes nothing litestream can see.
-  if (wasReplicated) await state.withConfig(() => state.litestream.bounce(state.replicatedApps));
-  log({ event: "removed", orgId, appId, wasServed, wasReplicated });
 }
 
 /** Full reconcile: registry is the source of truth for adds AND removals. */
@@ -51,25 +60,29 @@ export async function doSync(state: SyncState): Promise<{ added: number; removed
     added += 1;
   }
 
+  const gone: LitestreamApp[] = [];
   for (const [key, app] of [...state.served]) {
     if (target.has(key)) continue;
     state.served.delete(key);
     state.replicated.delete(key);
     await state.manager.removeApp(app.orgId, app.appId);
-    // Local file goes; the S3 replica is retained as the durable archive
-    // (cleanup is a documented manual op — litestream retention stops with
-    // replication, and no S3 lifecycle rule is allowed to touch it).
-    try {
-      rmSync(dirname(app.dbPath), { recursive: true, force: true });
-    } catch (err) {
-      log({ event: "remove-cleanup-failed", orgId: app.orgId, appId: app.appId, message: (err as Error).message });
-    }
+    gone.push(app);
     removed += 1;
-    log({ event: "removed", orgId: app.orgId, appId: app.appId });
   }
 
-  if (added > 0 || removed > 0) {
-    await state.withConfig(() => state.litestream.bounce(state.replicatedApps));
+  try {
+    if (added > 0 || removed > 0) {
+      await state.withConfig(() => state.litestream.apply(state.replicatedApps));
+    }
+  } finally {
+    // Local files go LAST (litestream stops a database before forgetting it,
+    // and cannot stop a deleted one); the S3 replica is retained as the durable
+    // archive (cleanup is a documented manual op — litestream retention stops
+    // with replication, and no S3 lifecycle rule is allowed to touch it).
+    for (const app of gone) {
+      deleteLocal(app.dbPath, app.orgId, app.appId);
+      log({ event: "removed", orgId: app.orgId, appId: app.appId });
+    }
   }
   return { added, removed };
 }

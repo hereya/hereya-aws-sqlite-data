@@ -28,6 +28,11 @@ test("buildConfig emits the 0.5.x schema (global snapshot, single replica)", () 
       "snapshot:",
       "  interval: 6h",
       "  retention: 72h",
+      // The control socket, beside the config file: what lets one database
+      // join or leave without restarting replication for the others.
+      "socket:",
+      "  enabled: true",
+      "  path: /etc/dilaya/litestream.sock",
       "dbs:",
       "  - path: /dbs/org-a/app-1/app.db",
       "    replica:",
@@ -40,6 +45,16 @@ test("buildConfig emits the 0.5.x schema (global snapshot, single replica)", () 
       "",
     ].join("\n"),
   );
+});
+
+test("the socket block disappears when the socket is off or cannot be bound", () => {
+  assert.ok(!makeLitestream({ LITESTREAM_SOCKET_PATH: "off" }).buildConfig(APPS).includes("socket:"));
+  // sockaddr_un caps the path (~104 bytes): litestream would die on
+  // `bind: invalid argument`, so a path that long means "no socket", not a crash.
+  const long = makeLitestream({ LITESTREAM_CONFIG_PATH: `/${"x".repeat(120)}/litestream.yml` });
+  assert.ok(!long.buildConfig(APPS).includes("socket:"));
+  const custom = makeLitestream({ LITESTREAM_SOCKET_PATH: "/run/ls.sock" }).buildConfig(APPS);
+  assert.ok(custom.includes("socket:\n  enabled: true\n  path: /run/ls.sock\n"));
 });
 
 test("buildConfig never emits the silently-ignored 0.3.x replica keys", () => {

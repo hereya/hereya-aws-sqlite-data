@@ -44,7 +44,7 @@ export async function ensureServed(state: SyncState, orgId: string, appId: strin
       // app is in the file litestream is reading — not merely in a Set.
       await state.withConfig(async () => {
         state.replicated.add(key);
-        await state.litestream.bounce(state.replicatedApps);
+        await state.litestream.apply(state.replicatedApps);
       });
       log({ event: wasServed ? "promoted" : "hot-add", orgId, appId });
     } catch (err) {

@@ -45,6 +45,9 @@ const NOT_THE_STACK_S_JOB = new Set([
   "LITESTREAM_DISABLED",
   "LITESTREAM_BIN",
   "LITESTREAM_CONFIG_PATH",
+  // Follows the config path; `off` is an on-the-box escape hatch (every change
+  // falls back to the bounce), not something two deployments should disagree on.
+  "LITESTREAM_SOCKET_PATH",
   // Tuning the service owns: sensible defaults in code, deliberately NOT
   // per-deployment knobs. Exposing one means deciding it should differ between
   // deployments, which none of these should.

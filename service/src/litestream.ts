@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "./config.ts";
+import { ControlSocket, diffWatched, pooled } from "./litestream/control.ts";
 import { Restorer } from "./litestream/restore.ts";
 
 export interface LitestreamApp {
@@ -14,6 +15,10 @@ export interface LitestreamApp {
 }
 
 export type RestoreOutcome = "existing" | "restored" | "fresh";
+
+/** Past this many changes at once, one ~1 s bounce beats that many socket
+ *  commands run under the config lock. */
+const SOCKET_MAX_CHANGES = 32;
 
 function log(event: Record<string, unknown>): void {
   console.log(JSON.stringify({ type: "litestream", ...event }));
@@ -25,10 +30,14 @@ export class Litestream {
   private childHealthy = false;
   private stopping = false;
   private readonly restorer: Restorer;
+  private readonly control: ControlSocket | null;
+  /** What the daemon was last told to watch, by db path — `apply` diffs against it. */
+  private watched = new Map<string, LitestreamApp>();
 
   constructor(cfg: Config) {
     this.cfg = cfg;
     this.restorer = new Restorer(cfg);
+    this.control = cfg.litestreamSocketPath ? new ControlSocket(cfg.litestreamBin, cfg.litestreamSocketPath) : null;
   }
 
   replicaUrl(app: LitestreamApp): string {
@@ -62,8 +71,11 @@ export class Litestream {
       "snapshot:",
       `  interval: ${this.cfg.litestreamSnapshotInterval}`,
       `  retention: ${this.cfg.litestreamRetention}`,
-      "dbs:",
     ];
+    if (this.cfg.litestreamSocketPath) {
+      lines.push("socket:", "  enabled: true", `  path: ${this.cfg.litestreamSocketPath}`);
+    }
+    lines.push("dbs:");
     for (const app of apps) {
       lines.push(`  - path: ${app.dbPath}`);
       lines.push(`    replica:`);
@@ -77,6 +89,7 @@ export class Litestream {
   writeConfig(apps: LitestreamApp[]): void {
     mkdirSync(dirname(this.cfg.litestreamConfigPath), { recursive: true });
     writeFileSync(this.cfg.litestreamConfigPath, this.buildConfig(apps));
+    this.watched = new Map(apps.map((app) => [app.dbPath, app]));
   }
 
   /** Spec §4 step 5: start continuous replication (after the API is up). */
@@ -91,7 +104,39 @@ export class Litestream {
     this.spawnChild();
   }
 
-  /** Hot-add/remove: regenerate config and bounce the child (~1s pause). */
+  /**
+   * Hot-add/remove: make the daemon watch exactly `apps`, touching ONLY the
+   * databases that join or leave — through the control socket, so replication
+   * of every other database carries on (a bounce suspends all of them ~1 s).
+   *
+   * The config file is still written first: it is what a cold start and the
+   * respawn-after-crash read, and it is what makes the fallback safe — whatever
+   * the socket did or did not do, a bounce converges on the file. Callers hold
+   * `SyncState.withConfig`, exactly as they did for `bounce`.
+   */
+  async apply(apps: LitestreamApp[]): Promise<void> {
+    if (this.cfg.litestreamDisabled) return;
+    const { added, removed } = diffWatched(this.watched, apps);
+    const changes = added.length + removed.length;
+    // No daemon yet, or none wanted (on an empty list it logs ERROR and idles):
+    // starting or stopping it disturbs nobody.
+    if (!this.control || !this.child || apps.length === 0 || changes > SOCKET_MAX_CHANGES) {
+      return this.bounce(apps);
+    }
+    const control = this.control;
+    this.writeConfig(apps);
+    try {
+      await control.ready();
+      await pooled(removed, (app) => control.remove(app));
+      await pooled(added, (app) => control.register(app, this.replicaUrl(app)));
+      log({ event: "socket-applied", added: added.length, removed: removed.length });
+    } catch (err) {
+      log({ event: "socket-fallback", message: (err as Error).message });
+      await this.bounce(apps);
+    }
+  }
+
+  /** The whole-process restart `apply` falls back to (~1s pause for every db). */
   async bounce(apps: LitestreamApp[]): Promise<void> {
     if (this.cfg.litestreamDisabled) return;
     this.writeConfig(apps);

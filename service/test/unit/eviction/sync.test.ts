@@ -149,7 +149,7 @@ test("an app mid-promotion is never evicted out from under the request waiting o
       await gate;
       return "restored" as RestoreOutcome;
     },
-    bounce: f.ls.bounce.bind(f.ls),
+    apply: f.ls.apply.bind(f.ls),
   } as unknown as Litestream;
   const sync2 = new AppSync(registryOf([]), slowManager, slowLs, 1);
   const promotion = sync2.ensureServed("org", "newcomer");

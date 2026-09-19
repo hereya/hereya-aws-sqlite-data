@@ -23,7 +23,7 @@ function fakeLitestream(outcomeFor: (appId: string) => RestoreOutcome) {
       restored.push(app.appId);
       return outcomeFor(app.appId);
     },
-    async bounce(apps: LitestreamApp[]) {
+    async apply(apps: LitestreamApp[]) {
       bounces.push(apps.map((a) => a.appId).sort());
     },
   } as unknown as Litestream;
@@ -118,7 +118,7 @@ test("a failed promotion leaves the app SERVED and unreplicated, never half-regi
   const f = fakeLitestream(() => "fresh");
   const sync = new AppSync(fakeRegistry(["app-a"]), manager, f.ls, 1);
   await sync.bootRestoreAll();
-  (f.ls as unknown as { bounce: () => Promise<void> }).bounce = async () => {
+  (f.ls as unknown as { apply: () => Promise<void> }).apply = async () => {
     throw new Error("boom");
   };
 

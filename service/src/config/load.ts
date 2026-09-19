@@ -1,5 +1,6 @@
 import type { Config } from "./types.ts";
 import { assertL0RetentionCoversL1, parseLevelIntervals } from "./durations.ts";
+import { resolveSocketPath } from "../litestream/control.ts";
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // port 0 is valid (ephemeral, used by tests); negatives and garbage are not
@@ -44,6 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  const litestreamConfigPath = env.LITESTREAM_CONFIG_PATH ?? "/etc/dilaya/litestream.yml";
   const l0Retention = durationEnv("LITESTREAM_L0_RETENTION", "3h");
   const levelIntervals = parseLevelIntervals(env.LITESTREAM_LEVEL_INTERVALS, ["30m", "2h", "6h"]);
   assertL0RetentionCoversL1(l0Retention, levelIntervals);
@@ -70,7 +72,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     orgQuotaCacheMs: intEnv("ORG_QUOTA_CACHE_MS", 30_000),
     litestreamDisabled: env.LITESTREAM_DISABLED === "1" || env.LITESTREAM_DISABLED === "true",
     litestreamBin: env.LITESTREAM_BIN ?? "litestream",
-    litestreamConfigPath: env.LITESTREAM_CONFIG_PATH ?? "/etc/dilaya/litestream.yml",
+    litestreamConfigPath: litestreamConfigPath,
+    litestreamSocketPath: resolveSocketPath(env.LITESTREAM_SOCKET_PATH, litestreamConfigPath),
     replicaBaseUrl: (env.REPLICA_BASE_URL ?? "").replace(/\/+$/, ""),
     litestreamSyncIntervalMs: intEnv("LITESTREAM_SYNC_INTERVAL_MS", 1000),
     litestreamRetention: env.LITESTREAM_RETENTION ?? "72h",

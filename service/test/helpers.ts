@@ -66,6 +66,7 @@ export async function startTestService(
     litestreamDisabled: true,
     litestreamBin: "litestream",
     litestreamConfigPath: join(dir, "litestream.yml"),
+    litestreamSocketPath: "",
     replicaBaseUrl: "",
     litestreamSyncIntervalMs: 200,
     litestreamRetention: "72h",
