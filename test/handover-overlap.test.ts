@@ -58,6 +58,7 @@ function gateDeps(ddb: ReturnType<typeof fakeDdb>, clock: { t: number }, events:
     baseline: null,
     announcedAtMs: 0,
     completeLaunch: async () => void events.push(`hook-released@${clock.t}`),
+    peers: async () => null,
     servedKeys: () => [],
     catchUpDeps: { manager: { dbPath: () => "/nope", removeApp: async () => {} }, litestream: { restoreIfMissing: async () => "restored" as const }, serves: () => true },
   };
@@ -149,4 +150,41 @@ test("the watcher acknowledges AFTER its snapshot, and acknowledges a SECOND rep
 
   // And we never acknowledge ourselves.
   assert.equal(await acknowledgeWarming(deps, { selfInstanceId: "i-new-2" }), null);
+});
+
+test("a predecessor that does NOT speak the protocol is still seen — through the ASG — and waited for", async () => {
+  // The roll that switches the handover ON: the old service has no watcher, so
+  // there is no ack and there will be no report. Taking the short wait here is
+  // starting litestream beside a live writer.
+  const ddb = fakeDdb();
+  const clock = { t: 0 };
+  const events: string[] = [];
+  const restored: string[] = [];
+  const deps = {
+    ...gateDeps(ddb, clock, events),
+    peers: async () => (clock.t < 30_000 ? ["i-old"] : []),
+    servedKeys: () => ["org-a/app-1", "org-a/app-2"],
+    catchUpDeps: {
+      manager: { dbPath: (o: string, a: string) => `/nonexistent/${o}/${a}/app.db`, removeApp: async () => {} },
+      litestream: { restoreIfMissing: async (app: { orgId: string; appId: string }) => (restored.push(`${app.orgId}/${app.appId}`), "restored" as const) },
+      serves: () => true,
+    },
+  };
+  await runHandoverGate(cfg, deps);
+  assert.ok(clock.t >= 30_000, `must wait until the ASG drops the predecessor, stopped at ${clock.t} ms`);
+  // Gone without a report = it could not say what moved = re-restore EVERYTHING.
+  assert.deepEqual(restored.sort(), ["org-a/app-1", "org-a/app-2"]);
+});
+
+test("an ASG that cannot be read is 'unknown', never 'nobody' — and never stretches a crash recovery", async () => {
+  const ddb = fakeDdb();
+  const clock = { t: 0 };
+  const realError = console.error;
+  console.error = () => {};
+  try {
+    await runHandoverGate(cfg, { ...gateDeps(ddb, clock, []), peers: async () => null });
+  } finally {
+    console.error = realError;
+  }
+  assert.ok(clock.t < 5_000, `unknown peers + no ack = the short wait, took ${clock.t} ms`);
 });

@@ -11,6 +11,7 @@
 import type { Config } from "../config.ts";
 import { awaitAck } from "./ack.ts";
 import { catchUp, type CatchUpDeps } from "./catchup.ts";
+import { awaitPredecessorStop, type StopOutcome } from "./overlap.ts";
 import { awaitHandover } from "./protocol.ts";
 import type { HandoverRecord } from "./record.ts";
 import type { HandoverDeps } from "./protocol.ts";
@@ -40,6 +41,8 @@ export interface GateDeps extends HandoverDeps {
    * SIGTERM, so waiting first would be waiting for something we are blocking.
    */
   completeLaunch: () => Promise<unknown>;
+  /** The other instances of our ASG (overlap.ts); null = could not tell. */
+  peers: () => Promise<string[] | null>;
   /** Every app this instance restored — the fallback list when the departing
    *  instance could not say which ones moved. */
   servedKeys: () => string[];
@@ -48,55 +51,56 @@ export interface GateDeps extends HandoverDeps {
 
 /**
  * Wait for the previous instance to prove it stopped, then re-restore whatever
- * it says moved while we warmed up.
+ * moved while we warmed up. Three steps, and their ORDER is the design:
  *
- * ON TIMEOUT WE PROCEED, LOUDLY. That is deliberate and it is what makes the
- * flag safe to switch on BEFORE the ASG changes: with terminate-before-launch
- * the predecessor is already gone when we boot, so no report will ever arrive
- * and the wait always expires. Refusing to serve there would turn switching the
- * flag on into an outage. Once the ASG overlaps instances, the same timeout
- * means the genuinely dangerous case — a hung predecessor — and the operator
- * decides then whether to make it fatal; the log line is written so that
- * decision is made on evidence rather than in the dark.
+ *   1. Is anybody there? A live predecessor acknowledges us (ack.ts), and the
+ *      ASG lists it (overlap.ts). Either is enough; the ASG covers a predecessor
+ *      that does not speak this protocol — notably on the very roll that
+ *      switches it on.
+ *   2. Release the launch hook. It is what gets the predecessor its SIGTERM, so
+ *      waiting for its report first would be waiting on ourselves.
+ *   3. Somebody there: wait — long, and free, since it is still serving — until
+ *      it reports, or the ASG says it is gone. Nobody: the short wait; every
+ *      second of it is outage on a crash recovery, and proceeding at its end is
+ *      what keeps a crash recovery from becoming a refusal to serve.
  */
 export async function runHandoverGate(cfg: Config, deps: GateDeps): Promise<void> {
-  // 1. Is anybody there? (ack.ts) — decided BEFORE we let the ASG move on.
-  const predecessor = await awaitAck(deps, {
+  const acked = await awaitAck(deps, {
     selfInstanceId: deps.instanceId,
     deadlineMs: deps.announcedAtMs + cfg.handoverAckMs,
   });
-  // 2. We are warm: let the rolling update proceed to the predecessor.
+  const peersAtStart = await deps.peers();
   await deps.completeLaunch();
-  // 3. A predecessor that answered is ALIVE, still serving, and about to be
-  // told to stop: waiting for it is free and starting without it is the dual
-  // writer, so the wait is long. Nobody answered: the short wait, as before —
-  // every second of it is outage on a crash recovery.
-  const timeoutMs = predecessor === null ? cfg.handoverTimeoutMs : cfg.handoverOverlapTimeoutMs;
-  const outcome = await awaitHandover(deps, { baseline: deps.baseline, timeoutMs });
+
+  const someoneThere = acked !== null || (peersAtStart !== null && peersAtStart.length > 0);
+  const outcome: StopOutcome = someoneThere
+    ? await awaitPredecessorStop(deps, { baseline: deps.baseline, timeoutMs: cfg.handoverOverlapTimeoutMs, peers: deps.peers })
+    : await awaitHandover(deps, { baseline: deps.baseline, timeoutMs: cfg.handoverTimeoutMs });
 
   if (outcome.reason === "timeout") {
     console.error(
       JSON.stringify({
         type: "handover",
         event: "proceeding-unproven",
-        message:
-          predecessor === null
-            ? "no predecessor answered and none reported a stop — starting replication. Expected on a crash recovery or a process restart."
-            : "a LIVE predecessor acknowledged us and never reported its stop — starting replication anyway. It was HUNG or killed mid-drain: check for a dual writer.",
-        predecessor,
+        message: someoneThere
+          ? "a LIVE predecessor neither reported its stop nor left the ASG before the deadline — starting replication anyway. Check for a dual writer."
+          : "nobody answered and nobody is listed — starting replication. Expected on a crash recovery or a process restart.",
+        acked,
+        peers: peersAtStart,
       }),
     );
     return;
   }
 
-  // `dirtyUnknown` means the predecessor could not tell us which apps moved —
-  // never that none did. Re-restore everything we hold rather than guess.
-  const keys = outcome.record.dirtyUnknown ? deps.servedKeys() : outcome.record.dirtyApps;
+  // Gone without a report, or a report that could not name what moved: never
+  // "nothing moved". Re-restore everything we hold rather than guess.
+  const unknown = outcome.reason === "predecessor-gone" || outcome.record.dirtyUnknown === true;
+  const keys = unknown ? deps.servedKeys() : outcome.reason === "handover" ? outcome.record.dirtyApps : [];
   if (keys.length === 0) {
-    log({ event: "catchup-empty", seq: outcome.record.seq });
+    log({ event: "catchup-empty", reason: outcome.reason });
     return;
   }
-  log({ event: "catchup-start", apps: keys.length, unknown: outcome.record.dirtyUnknown === true });
+  log({ event: "catchup-start", apps: keys.length, unknown });
   const done = await catchUp(deps.catchUpDeps, keys);
   log({ event: "catchup-done", requested: keys.length, restored: done.length });
 }

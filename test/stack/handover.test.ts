@@ -33,7 +33,7 @@ test("OFF (the default, and production): terminate-before-launch, no second slot
   assert.equal(asg.Properties.MaxSize, "1");
   assert.equal(asg.UpdatePolicy.AutoScalingRollingUpdate.MinInstancesInService, 0);
   assert.equal(asg.Properties.DesiredCapacity, undefined, "OFF must not change the template production already runs");
-  template.resourceCountIs("AWS::AutoScaling::LifecycleHook", 0);
+  assert.equal(asg.Properties.LifecycleHookSpecificationList, undefined);
 });
 
 test("ON: launch-before-terminate, held back by a launch hook that ABANDONS a build which never warms", () => {
@@ -44,14 +44,20 @@ test("ON: launch-before-terminate, held back by a launch hook that ABANDONS a bu
   assert.equal(asg.Properties.DesiredCapacity, "1", "the second slot is for a roll, never for a second serving instance");
   assert.equal(asg.UpdatePolicy.AutoScalingRollingUpdate.MinInstancesInService, 1);
   assert.equal(asg.Properties.CapacityRebalance, false, "capacity rebalance stays OFF either way");
-  template.hasResourceProperties("AWS::AutoScaling::LifecycleHook", {
-    // The name is a contract with service/src/handover/lifecycle.ts.
-    LifecycleHookName: "dilaya-warm-before-service",
-    LifecycleTransition: "autoscaling:EC2_INSTANCE_LAUNCHING",
-    // CONTINUE would put a build that cannot boot InService, and the rolling
-    // update would then kill the healthy instance for it.
-    DefaultResult: "ABANDON",
-  });
+  // INLINE, never a separate AWS::AutoScaling::LifecycleHook: that resource is
+  // created after the ASG's own update, i.e. after the roll it must hold back.
+  template.resourceCountIs("AWS::AutoScaling::LifecycleHook", 0);
+  assert.deepEqual(asg.Properties.LifecycleHookSpecificationList, [
+    {
+      // The name is a contract with service/src/handover/lifecycle.ts.
+      LifecycleHookName: "dilaya-warm-before-service",
+      LifecycleTransition: "autoscaling:EC2_INSTANCE_LAUNCHING",
+      // CONTINUE would put a build that cannot boot InService, and the rolling
+      // update would then kill the healthy instance for it.
+      DefaultResult: "ABANDON",
+      HeartbeatTimeout: 600,
+    },
+  ]);
 });
 
 test("ON reaches the service too — the same switch, not a sibling", () => {

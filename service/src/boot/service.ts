@@ -25,6 +25,7 @@ import { announceWarming } from "../handover/protocol.ts";
 import type { HandoverRecord } from "../handover/record.ts";
 import { readInstanceId } from "../handover/instance-id.ts";
 import { completeLaunchHook, createLifecycleClient } from "../handover/lifecycle.ts";
+import { listPeers } from "../handover/overlap.ts";
 import { WarmingWatcher } from "../handover/watcher.ts";
 import type { RunningService } from "./types.ts";
 import { seedWriteStats } from "./write-stats-boot.ts";
@@ -123,14 +124,13 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   let watcher: WarmingWatcher | null = null;
   if (handoverForShutdown !== null) {
     const handoverDeps = handoverForShutdown;
+    const asgClient = cfg.imdsEnabled ? createLifecycleClient(cfg.awsRegion) : null;
     await runHandoverGate(cfg, {
       ...handoverDeps,
       baseline: handoverBaseline,
       announcedAtMs,
-      completeLaunch: () =>
-        cfg.imdsEnabled
-          ? completeLaunchHook({ client: createLifecycleClient(cfg.awsRegion) }, handoverDeps.instanceId)
-          : Promise.resolve(false),
+      completeLaunch: async () => (asgClient ? completeLaunchHook({ client: asgClient }, handoverDeps.instanceId) : false),
+      peers: async () => (asgClient ? listPeers({ client: asgClient }, handoverDeps.instanceId) : null),
       servedKeys: () => sync.servedApps.map((a) => appKeyOf(a.orgId, a.appId)),
       catchUpDeps: {
         manager,

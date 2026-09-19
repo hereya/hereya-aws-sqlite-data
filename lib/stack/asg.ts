@@ -64,12 +64,20 @@ export function createAsg(stack: cdk.Stack, ctx: StackContext): void {
     // this the rolling update kills the old instance when the new EC2 instance
     // is merely RUNNING, ~45 s before it can serve. ABANDON: a build that never
     // warms up is discarded while the old instance keeps serving.
-    asg.addLifecycleHook("WarmBeforeService", {
-      lifecycleHookName: "dilaya-warm-before-service",
-      lifecycleTransition: autoscaling.LifecycleTransition.INSTANCE_LAUNCHING,
-      defaultResult: autoscaling.DefaultResult.ABANDON,
-      heartbeatTimeout: cdk.Duration.minutes(10),
-    });
+    //
+    // INLINE on the group, not `addLifecycleHook()`: that creates a separate
+    // resource which CloudFormation makes AFTER it has finished updating the
+    // ASG — i.e. after the very rolling replacement the hook exists to hold
+    // back. On the deploy that switches the handover on, the hook would arrive
+    // once the roll was over.
+    (asg.node.defaultChild as autoscaling.CfnAutoScalingGroup).lifecycleHookSpecificationList = [
+      {
+        lifecycleHookName: "dilaya-warm-before-service",
+        lifecycleTransition: "autoscaling:EC2_INSTANCE_LAUNCHING",
+        defaultResult: "ABANDON",
+        heartbeatTimeout: 600,
+      },
+    ];
   }
   ctx.asg = asg;
   // Capacity rebalance must stay OFF: it launches the replacement while the

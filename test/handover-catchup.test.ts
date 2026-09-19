@@ -119,6 +119,7 @@ test("a TIMEOUT never reaches the catch-up — nothing is deleted on an unproven
     baseline: null,
     announcedAtMs: 0,
     completeLaunch: async () => false,
+    peers: async () => null,
     servedKeys: () => ["org-a/app-1"],
     catchUpDeps: {
       manager: {
