@@ -1,4 +1,4 @@
-import type * as cdk from "aws-cdk-lib";
+import * as cdk from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import type { StackContext } from "./context.ts";
 
@@ -112,4 +112,25 @@ export function createInstanceRole(stack: cdk.Stack, ctx: StackContext): void {
     }),
   );
   artifact.grantRead(role);
+  // Release of the launch hook (handover only). The ASG is named by
+  // CloudFormation as `<stack>-Asg…`, and the ARN is written as a pattern
+  // rather than taken from the resource: the ASG depends on this role through
+  // the launch template, so referencing it here would be a cycle.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "HandoverLaunchHook",
+      actions: ["autoscaling:CompleteLifecycleAction"],
+      resources: [
+        `arn:aws:autoscaling:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:autoScalingGroup:*:autoScalingGroupName/${cdk.Aws.STACK_NAME}-*`,
+      ],
+    }),
+  );
+  // Describe* has no resource-level scoping in Auto Scaling; read-only.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "HandoverDescribeSelf",
+      actions: ["autoscaling:DescribeAutoScalingInstances"],
+      resources: ["*"],
+    }),
+  );
 }

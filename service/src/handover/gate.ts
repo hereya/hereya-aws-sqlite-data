@@ -9,6 +9,7 @@
 // would look like a harmless reordering and would be the worst bug in the
 // package.
 import type { Config } from "../config.ts";
+import { awaitAck } from "./ack.ts";
 import { catchUp, type CatchUpDeps } from "./catchup.ts";
 import { awaitHandover } from "./protocol.ts";
 import type { HandoverRecord } from "./record.ts";
@@ -30,6 +31,15 @@ export interface GateDeps extends HandoverDeps {
    * taken here — a gate that could announce for itself could announce late.
    */
   baseline: HandoverRecord | null;
+  /** When `announceWarming` ran, on THIS machine's clock — the ack deadline is
+   *  counted from it, so the restore absorbs the wait instead of adding to it. */
+  announcedAtMs: number;
+  /**
+   * Release the ASG launch hook (lifecycle.ts). Called once we are warm and
+   * BEFORE waiting for the report — it is what gets the predecessor its
+   * SIGTERM, so waiting first would be waiting for something we are blocking.
+   */
+  completeLaunch: () => Promise<unknown>;
   /** Every app this instance restored — the fallback list when the departing
    *  instance could not say which ones moved. */
   servedKeys: () => string[];
@@ -50,7 +60,19 @@ export interface GateDeps extends HandoverDeps {
  * decision is made on evidence rather than in the dark.
  */
 export async function runHandoverGate(cfg: Config, deps: GateDeps): Promise<void> {
-  const outcome = await awaitHandover(deps, { baseline: deps.baseline, timeoutMs: cfg.handoverTimeoutMs });
+  // 1. Is anybody there? (ack.ts) — decided BEFORE we let the ASG move on.
+  const predecessor = await awaitAck(deps, {
+    selfInstanceId: deps.instanceId,
+    deadlineMs: deps.announcedAtMs + cfg.handoverAckMs,
+  });
+  // 2. We are warm: let the rolling update proceed to the predecessor.
+  await deps.completeLaunch();
+  // 3. A predecessor that answered is ALIVE, still serving, and about to be
+  // told to stop: waiting for it is free and starting without it is the dual
+  // writer, so the wait is long. Nobody answered: the short wait, as before —
+  // every second of it is outage on a crash recovery.
+  const timeoutMs = predecessor === null ? cfg.handoverTimeoutMs : cfg.handoverOverlapTimeoutMs;
+  const outcome = await awaitHandover(deps, { baseline: deps.baseline, timeoutMs });
 
   if (outcome.reason === "timeout") {
     console.error(
@@ -58,7 +80,10 @@ export async function runHandoverGate(cfg: Config, deps: GateDeps): Promise<void
         type: "handover",
         event: "proceeding-unproven",
         message:
-          "no predecessor proved it stopped — starting replication anyway. Expected while the ASG still terminates before launching; once it overlaps instances this means a HUNG predecessor.",
+          predecessor === null
+            ? "no predecessor answered and none reported a stop — starting replication. Expected on a crash recovery or a process restart."
+            : "a LIVE predecessor acknowledged us and never reported its stop — starting replication anyway. It was HUNG or killed mid-drain: check for a dual writer.",
+        predecessor,
       }),
     );
     return;

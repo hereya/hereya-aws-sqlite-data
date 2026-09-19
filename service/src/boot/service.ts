@@ -24,6 +24,7 @@ import { runHandoverGate } from "../handover/gate.ts";
 import { announceWarming } from "../handover/protocol.ts";
 import type { HandoverRecord } from "../handover/record.ts";
 import { readInstanceId } from "../handover/instance-id.ts";
+import { completeLaunchHook, createLifecycleClient } from "../handover/lifecycle.ts";
 import { WarmingWatcher } from "../handover/watcher.ts";
 import type { RunningService } from "./types.ts";
 import { seedWriteStats } from "./write-stats-boot.ts";
@@ -79,11 +80,13 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   // catch-up list AND outside our copy — stale data, silently.
   let handoverForShutdown: { client: DynamoDBClient; tableName: string; instanceId: string } | null = null;
   let handoverBaseline: HandoverRecord | null = null;
+  let announcedAtMs = 0;
   const handoverClient = cfg.handoverEnabled ? createHandoverClient(cfg) : null;
   if (handoverClient !== null) {
     const instanceId = (await readInstanceId()) ?? "";
     handoverForShutdown = { client: handoverClient, tableName: cfg.registryTable, instanceId };
     handoverBaseline = await announceWarming(handoverForShutdown, { instanceId });
+    announcedAtMs = Date.now();
   }
 
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
@@ -123,6 +126,11 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     await runHandoverGate(cfg, {
       ...handoverDeps,
       baseline: handoverBaseline,
+      announcedAtMs,
+      completeLaunch: () =>
+        cfg.imdsEnabled
+          ? completeLaunchHook({ client: createLifecycleClient(cfg.awsRegion) }, handoverDeps.instanceId)
+          : Promise.resolve(false),
       servedKeys: () => sync.servedApps.map((a) => appKeyOf(a.orgId, a.appId)),
       catchUpDeps: {
         manager,

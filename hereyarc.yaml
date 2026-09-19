@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.37
+version: 0.1.38
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -46,7 +46,7 @@ parameters:
     mandatory: false
     default: "3600000"
   handoverEnabled:
-    description: "Passation à chaud lors du remplacement d'une instance (défaut \"false\", c'est-à-dire DÉSACTIVÉ). Avec la valeur par défaut, l'instance démarre exactement comme avant et rien de ce mécanisme ne s'exécute. Allumé, la remplaçante annonce son réchauffage AVANT de restaurer, attend que la devancière PROUVE son arrêt (rapport publié seulement après la sortie du processus litestream), re-restaure les seules bases écrites pendant la fenêtre, puis démarre sa réplication. Ce qui rend ce réglage particulier : l'allumer est ce qui fait se CHEVAUCHER deux instances, soit l'état que la politique de l'ASG (tuer-avant-lancer) existe pour empêcher — c'est donc une décision d'opérateur, jamais une déduction, au même titre que evictionIdleDays. Tant que l'ASG tue avant de lancer, la devancière est déjà partie quand la remplaçante démarre : l'attente expire donc toujours, la remplaçante continue en le signalant bruyamment, et le comportement observable est inchangé — c'est ce qui rend l'allumage testable seul."
+    description: "⚠️ UN SEUL interrupteur pour DEUX choses indissociables : le protocole de passation dans le service ET la forme de l'ASG (2 places au lieu d'1, lancement AVANT terminaison, crochet de lancement qui retient la neuve tant qu'elle n'est pas chaude, ABANDON si elle ne chauffe jamais). L'un sans l'autre est nuisible : le chevauchement sans protocole = deux écrivains litestream ; le protocole sans chevauchement = une attente à laquelle personne ne répond. Passation à chaud lors du remplacement d'une instance (défaut \"false\", c'est-à-dire DÉSACTIVÉ). Avec la valeur par défaut, l'instance démarre exactement comme avant et rien de ce mécanisme ne s'exécute. Allumé, la remplaçante annonce son réchauffage AVANT de restaurer, attend que la devancière PROUVE son arrêt (rapport publié seulement après la sortie du processus litestream), re-restaure les seules bases écrites pendant la fenêtre, puis démarre sa réplication. Ce qui rend ce réglage particulier : l'allumer est ce qui fait se CHEVAUCHER deux instances, soit l'état que la politique de l'ASG (tuer-avant-lancer) existe pour empêcher — c'est donc une décision d'opérateur, jamais une déduction, au même titre que evictionIdleDays. Tant que l'ASG tue avant de lancer, la devancière est déjà partie quand la remplaçante démarre : l'attente expire donc toujours, la remplaçante continue en le signalant bruyamment, et le comportement observable est inchangé — c'est ce qui rend l'allumage testable seul."
     mandatory: false
     default: "false"
   handoverTimeoutMs:
@@ -57,6 +57,14 @@ parameters:
     description: "Cadence à laquelle l'instance en place regarde si une remplaçante a annoncé son réchauffage, en millisecondes (défaut 2000). Seule la PREMIÈRE observation compte : elle ouvre la fenêtre dont les écritures seront rapportées à la remplaçante. Ce veilleur est une optimisation, jamais une condition de correction — s'il ne voit rien, l'instance publie « je ne sais pas » et la remplaçante re-restaure toutes ses bases : plus lent, jamais faux."
     mandatory: false
     default: "2000"
+  handoverAckMs:
+    description: "Durée pendant laquelle la remplaçante cherche l'accusé de réception d'une devancière VIVANTE, en millisecondes, comptée depuis sa propre annonce (défaut 10000, soit cinq cadences de handoverWatchMs). C'est ce qui distingue « personne n'est là » (reprise après panne : on n'attend que handoverTimeoutMs, car chaque seconde est de la coupure) de « quelqu'un sert encore » (on attend handoverOverlapTimeoutMs, gratuitement). Sur une flotte réelle la restauration (~21 s) l'absorbe entièrement. Trop court, une devancière vivante passerait pour absente — la direction dangereuse."
+    mandatory: false
+    default: "10000"
+  handoverOverlapTimeoutMs:
+    description: "Attente maximale de la preuve d'arrêt UNE FOIS qu'une devancière vivante a accusé réception, en millisecondes (défaut 300000, soit 5 min). Long exprès, et gratuit : la devancière sert pendant toute cette attente. Couvre le temps que met CloudFormation à constater que la remplaçante est en service puis à terminer l'ancienne. À l'expiration la remplaçante continue avec une erreur explicite nommant la devancière : c'est le cas d'une devancière BLOQUÉE, à examiner."
+    mandatory: false
+    default: "300000"
   memoryHeadroomBytes:
     description: "Seuil d'alerte sur la mémoire disponible de la VM des bases, en octets (défaut 157286400, soit 150 Mo). C'est le plafond RÉEL du nombre d'apps qu'une instance peut tenir : litestream coûte environ 0,27 Mo de mémoire par base au-delà d'un socle fixe de ~65 Mo (mesuré de 20 à 1000 bases le 24/08/2026 avec scripts/loadtest.mjs ; la première lecture, 56,9 Mo divisés par 61, donnait « 0,93 Mo par base » et surestimait le coût marginal d'un facteur 3,4 — l'essentiel de ce total est un socle payé UNE fois) et l'instance par défaut n'a que 916 Mo — le mur est la mémoire, et il arrive bien avant n'importe quelle facture. Avant cette version, ce chiffre ne s'obtenait qu'en ouvrant une session SSM et en tapant `ps` à la main, autant dire jamais. L'alarme ne se déclenche PAS sur données manquantes, contrairement à ses voisines : une absence ici veut dire que le battement s'est arrêté, et l'alarme de battement le dit déjà — deux alertes pour un seul incident, c'est du bruit. Monter le seuil si l'instance est plus grosse."
     mandatory: false

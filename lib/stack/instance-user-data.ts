@@ -58,6 +58,8 @@ export function createUserData(stack: cdk.Stack, ctx: StackContext): void {
         HANDOVER_ENABLED: input("handoverEnabled", "false"),
         HANDOVER_TIMEOUT_MS: input("handoverTimeoutMs", "15000"),
         HANDOVER_WATCH_MS: input("handoverWatchMs", "2000"),
+        HANDOVER_ACK_MS: input("handoverAckMs", "10000"),
+        HANDOVER_OVERLAP_TIMEOUT_MS: input("handoverOverlapTimeoutMs", "300000"),
         HEARTBEAT_ENABLED: "1",
         HEARTBEAT_DIMENSION: stack.stackName,
         IMDS_ENABLED: "1",

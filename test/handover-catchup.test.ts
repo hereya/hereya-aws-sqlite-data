@@ -18,7 +18,7 @@ import { catchUp, localArtifacts } from "../service/src/handover/catchup.ts";
 import { runHandoverGate } from "../service/src/handover/gate.ts";
 import type { Config } from "../service/src/config.ts";
 
-const cfg = { handoverTimeoutMs: 50, handoverEnabled: true } as Config;
+const cfg = { handoverTimeoutMs: 50, handoverAckMs: 0, handoverOverlapTimeoutMs: 50, handoverEnabled: true } as Config;
 
 /** A db on disk with its sidecars and litestream staging dir. */
 function seedApp(root: string, orgId: string, appId: string): string {
@@ -117,6 +117,8 @@ test("a TIMEOUT never reaches the catch-up — nothing is deleted on an unproven
     sleep: async () => void (clock += 100),
     instanceId: "i-new",
     baseline: null,
+    announcedAtMs: 0,
+    completeLaunch: async () => false,
     servedKeys: () => ["org-a/app-1"],
     catchUpDeps: {
       manager: {

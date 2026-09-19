@@ -23,6 +23,25 @@ runbook; this file is the working-agreement layer for agents.
    litestream writers on one generation path. Same reason the update policy is a **rolling
    update with `minInstancesInService: 0`** (terminate-before-launch): never switch it (back)
    to `replacingUpdate()`, which runs old and new instances side by side.
+   **Rewritten 2026-09-19 (`t_vm_zero_cut_handover`) — the invariant is "ONE litestream WRITER",
+   not "one instance".** What the rule above protects is the generation path, and an instance that
+   only *restores* (reads S3) and has not started `litestream replicate` is not a writer. So with
+   `handoverEnabled=true` — and ONLY then — the ASG takes `maxCapacity: 2`,
+   `minInstancesInService: 1` and an `EC2_INSTANCE_LAUNCHING` hook: the replacement warms up
+   beside the serving instance, invisible (no Cloud Map registration, no replication), and starts
+   writing only after the predecessor has REPORTED that its litestream child exited
+   (`service/src/handover/`). Three things keep that safe, and each is a test:
+   (a) **one switch** reshapes the ASG and enables the protocol — a second parameter would make
+   "overlap without protocol" expressible, which is the dual writer (`test/stack/handover.test.ts`);
+   (b) the boot **order** — announce → restore → bind → gate → `litestream.start`
+   (`test/handover-boot-order.test.ts`); (c) a live predecessor **acknowledges** the replacement,
+   so "no report yet" is read as *wait* and never as *nobody is there* (`test/handover-overlap.test.ts`).
+   Capacity rebalance stays OFF in both modes: it overlaps instances on AWS's schedule, outside
+   any deploy, and buys nothing. `replacingUpdate()` stays forbidden: it creates a second ASG,
+   which no hook of ours holds back. The residual risk, stated plainly: a predecessor that
+   acknowledged and then HUNG — alive, replicating, unable to report. After
+   `handoverOverlapTimeoutMs` the replacement proceeds with an error naming it; by then the rolling
+   update has long since terminated that instance, which is what actually stops it.
 6. **Wire shapes mirror the RDS Data API** (`SqlParameter[]`, `records`/`columnMetadata`/
    `numberOfRecordsUpdated`, `Field` union incl. base64 `blobValue`; INTEGER beyond ±2^53 →
    `stringValue`) so the connector's `convertParams`/`extractFieldValue` round-trip unchanged.

@@ -80,6 +80,8 @@ export async function startTestService(
     handoverEnabled: false,
     handoverTimeoutMs: 120_000,
     handoverWatchMs: 2_000,
+    handoverAckMs: 10_000,
+    handoverOverlapTimeoutMs: 300_000,
     heartbeatEnabled: false,
     heartbeatPeriodSeconds: 60,
     heartbeatDimension: "test",

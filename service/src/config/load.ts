@@ -94,6 +94,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     handoverEnabled: env.HANDOVER_ENABLED === "1" || env.HANDOVER_ENABLED === "true",
     handoverTimeoutMs: intEnv("HANDOVER_TIMEOUT_MS", 15_000),
     handoverWatchMs: intEnv("HANDOVER_WATCH_MS", 2_000),
+    handoverAckMs: intEnv("HANDOVER_ACK_MS", 10_000),
+    handoverOverlapTimeoutMs: intEnv("HANDOVER_OVERLAP_TIMEOUT_MS", 300_000),
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",

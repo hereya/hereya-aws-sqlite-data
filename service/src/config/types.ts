@@ -98,6 +98,20 @@ export interface Config {
   /** How often the departing instance asks whether a replacement has announced
    *  itself. Only the FIRST observation matters — it dates the window. */
   handoverWatchMs: number;
+  /**
+   * How long after ITS OWN announcement the replacement keeps looking for a
+   * live predecessor's acknowledgement (handover/ack.ts). Five watcher ticks:
+   * long enough that one missed poll is not read as "nobody there" — which is
+   * the dangerous direction — and short enough that a real fleet's ~21 s
+   * restore has already absorbed it.
+   */
+  handoverAckMs: number;
+  /**
+   * The wait once a LIVE predecessor has acknowledged us. Long on purpose, and
+   * free: the predecessor is still serving for the whole of it. It covers the
+   * time CloudFormation takes to notice we are InService and terminate it.
+   */
+  handoverOverlapTimeoutMs: number;
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;
