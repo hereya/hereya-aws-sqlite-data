@@ -48,6 +48,16 @@ export function createUserData(stack: cdk.Stack, ctx: StackContext): void {
         // must dwarf the ~1s replication lag), so it is never inferred.
         EVICTION_IDLE_DAYS: input("evictionIdleDays", "0"),
         EVICTION_SWEEP_MS: input("evictionSweepMs", "3600000"),
+        // Hot handover on instance replacement (t_vm_zero_cut_handover).
+        // "false" = the instance boots exactly as it always has. Switching it
+        // on is what makes two instances overlap, so it is an operator's
+        // decision, like evictionIdleDays and spotPercentage above.
+        // ⚠️ The service reads these names; without this block the flag is
+        // unreachable — a switch with no wire, which is how it shipped in the
+        // first draft of the wiring.
+        HANDOVER_ENABLED: input("handoverEnabled", "false"),
+        HANDOVER_TIMEOUT_MS: input("handoverTimeoutMs", "120000"),
+        HANDOVER_WATCH_MS: input("handoverWatchMs", "2000"),
         HEARTBEAT_ENABLED: "1",
         HEARTBEAT_DIMENSION: stack.stackName,
         IMDS_ENABLED: "1",
