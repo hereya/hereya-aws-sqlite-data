@@ -37,6 +37,10 @@ export class SyncState {
    */
   readonly replicated = new Set<string>();
   readonly pending = new Map<string, Promise<void>>();
+  /** Apps whose local file was ALREADY on the disk when this process booted —
+   *  i.e. a process restart. The handover catch-up must never delete those
+   *  (handover/catchup.ts): they may hold writes no replica has. */
+  readonly existingAtBoot = new Set<string>();
   /**
    * Serializes every mutation of the litestream config.
    *

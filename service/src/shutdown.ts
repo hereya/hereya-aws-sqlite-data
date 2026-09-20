@@ -13,6 +13,7 @@ import type { WarmingWatcher } from "./handover/watcher.ts";
 import type { WriteStats } from "./write-stats.ts";
 import { dirtySince } from "./handover/dirty.ts";
 import { publishHandover, type HandoverDeps } from "./handover/protocol.ts";
+import { clearWriter } from "./handover/writer-marker.ts";
 
 const IMDS_BASE = "http://169.254.169.254";
 
@@ -159,13 +160,17 @@ export class Shutdown {
     // 4. Final replication window, then stop litestream cleanly.
     await new Promise((r) => setTimeout(r, this.cfg.litestreamSyncIntervalMs * 2));
     await this.litestream.stop();
+    // No longer the writer — said BEFORE the report below hands the role over
+    // (handover/writer-marker.ts). If that cannot be said, no report: better a
+    // slow roll than a restart of ours that starts a second writer.
+    const released = clearWriter(this.cfg.dbDir);
 
     // 4-bis. HAND OVER (t_vm_zero_cut_handover) — only ever AFTER the line
     // above, because `stop()` waits for the litestream child to EXIT and the
     // report asserts exactly that. Publishing earlier would assert something
     // untrue and invite the replacement to start replicating while we still
     // were. Everything here is best-effort: a dying process must still die.
-    await this.handOver();
+    if (released) await this.handOver();
 
     await this.manager.closeAll();
     this.server.close();

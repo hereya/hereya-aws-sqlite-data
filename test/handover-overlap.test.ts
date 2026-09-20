@@ -46,7 +46,12 @@ const report = (seq: number) => ({
   org_id: { S: "_handover" }, sk: { S: "current" }, seq: { N: String(seq) },
   fromInstanceId: { S: "i-old" }, atMs: { N: "1" }, dirtyApps: { L: [] }, dirtyUnknown: { BOOL: false },
 });
-const ackFor = (id: string) => ({ org_id: { S: "_handover" }, sk: { S: "ack" }, fromInstanceId: { S: "i-old" }, forInstanceId: { S: id } });
+/** This boot's announcement id (the `atMs` it wrote) — what a live predecessor's ack echoes. */
+const BOOT = 7_000;
+const ackFor = (id: string, forAtMs: number | null = BOOT) => ({
+  org_id: { S: "_handover" }, sk: { S: "ack" }, fromInstanceId: { S: "i-old" }, forInstanceId: { S: id },
+  ...(forAtMs === null ? {} : { forAtMs: { N: String(forAtMs) } }),
+});
 
 function gateDeps(ddb: ReturnType<typeof fakeDdb>, clock: { t: number }, events: string[]) {
   return {
@@ -57,6 +62,7 @@ function gateDeps(ddb: ReturnType<typeof fakeDdb>, clock: { t: number }, events:
     instanceId: "i-new",
     baseline: null,
     announcedAtMs: 0,
+    announceId: BOOT,
     completeLaunch: async () => void events.push(`hook-released@${clock.t}`),
     peers: async () => null,
     servedKeys: () => [],
@@ -104,9 +110,27 @@ test("an ack left for ANOTHER instance by a previous roll is not proof of life",
   const clock = { t: 0 };
   const from = await awaitAck(
     { client: ddb.client, tableName: ddb.tableName, now: () => clock.t, sleep: async (ms) => void (clock.t += ms) },
-    { selfInstanceId: "i-new", deadlineMs: 2_000 },
+    { selfInstanceId: "i-new", announceId: BOOT, deadlineMs: 2_000 },
   );
   assert.equal(from, null);
+});
+
+test("an ack left for THIS instance by its OWN first boot is not proof of life either (process restart)", async () => {
+  // t_handover_stale_ack_wipe. The item outlives the roll, and names the
+  // instance that goes on serving. Its process restarts: same instance id, a
+  // NEW announcement. Reading the old ack as "a predecessor is alive" is what
+  // led — ASG listing nobody — to "gone without a report: re-restore
+  // everything", i.e. every local database deleted under live traffic.
+  const deps = (ddb: ReturnType<typeof fakeDdb>, clock: { t: number }) => ({ client: ddb.client, tableName: ddb.tableName, now: () => clock.t, sleep: async (ms: number) => void (clock.t += ms) });
+  for (const stale of [ackFor("i-new", BOOT - 1), ackFor("i-new", null)]) {
+    const ddb = fakeDdb();
+    ddb.items.set("ack", stale);
+    const clock = { t: 0 };
+    assert.equal(await awaitAck(deps(ddb, clock), { selfInstanceId: "i-new", announceId: BOOT, deadlineMs: 2_000 }), null);
+  }
+  const ddb = fakeDdb();
+  ddb.items.set("ack", ackFor("i-new", BOOT));
+  assert.equal(await awaitAck(deps(ddb, { t: 0 }), { selfInstanceId: "i-new", announceId: BOOT, deadlineMs: 2_000 }), "i-old");
 });
 
 test("the launch hook is released AFTER the liveness decision and BEFORE the wait for the report", async () => {
@@ -132,7 +156,7 @@ test("the watcher acknowledges AFTER its snapshot, and acknowledges a SECOND rep
   const ddb = fakeDdb();
   const deps = { client: ddb.client, tableName: ddb.tableName };
   const watcher = new WarmingWatcher({ deps, selfInstanceId: "i-old", readStats: () => new Map() });
-  const warming = (id: string) => ({ org_id: { S: "_handover" }, sk: { S: "warming" }, instanceId: { S: id }, atMs: { N: "1" } });
+  const warming = (id: string, atMs = 1) => ({ org_id: { S: "_handover" }, sk: { S: "warming" }, instanceId: { S: id }, atMs: { N: String(atMs) } });
 
   await watcher.tick();
   assert.equal(ddb.items.has("ack"), false, "nothing to acknowledge yet");
@@ -147,6 +171,12 @@ test("the watcher acknowledges AFTER its snapshot, and acknowledges a SECOND rep
   ddb.items.set("warming", warming("i-new-2"));
   await watcher.tick();
   assert.equal((ddb.items.get("ack") as { forInstanceId: { S: string } }).forInstanceId.S, "i-new-2");
+
+  // The SAME replacement announces again (its process restarted): a new boot
+  // to acknowledge, echoing the new announcement.
+  ddb.items.set("warming", warming("i-new-2", 42));
+  await watcher.tick();
+  assert.equal((ddb.items.get("ack") as { forAtMs: { N: string } }).forAtMs.N, "42");
 
   // And we never acknowledge ourselves.
   assert.equal(await acknowledgeWarming(deps, { selfInstanceId: "i-new-2" }), null);
