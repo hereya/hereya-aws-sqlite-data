@@ -448,7 +448,7 @@ cell cancels its own moves that no live process drives (if B claimed first the w
 the app is B's) and finalizes the ones it claimed. IAM: `PlacementMoves` = `UpdateItem` on
 `LeadingKeys = _placement`, nothing else — a conditional partial update is the whole API.
 
-⚠️ **Every cell must run ≥ 0.1.45 before any move**: an older B has no `/admin/move-in` (the
+⚠️ **Every cell must run ≥ 0.1.46 before any move**: an older B has no `/admin/move-in` (the
 move is cancelled — harmless), but an older cell reads `vmId` only and would not see
 `b_started`. ⚠️ A cell whose PROCESS restarted after an app left keeps that app's file on disk
 (unserved, unwatched, still counted by the org quota) until the instance is replaced or the app

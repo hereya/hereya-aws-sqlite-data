@@ -11,6 +11,7 @@ import type { Relay } from "../relay.ts";
 import type { Moves } from "../server/move-routes.ts";
 import type { AppSync } from "../sync.ts";
 import type { TxRegistry } from "../tx.ts";
+import { createCells, type Cells } from "./cells.ts";
 
 export interface MovesRuntime {
   routes: Moves;
@@ -71,4 +72,19 @@ export function createMoves(args: {
       }
     },
   };
+}
+
+/**
+ * The cells, the moves, and the FIRST sweep — before the boot restore, and the
+ * order is the point: what `bootRestoreAll` lists as "ours" must already be
+ * decided, or a move a dead process left at `a_stopped` is restored and
+ * replicated here while its target is still free to claim it.
+ */
+export async function startCellsAndMoves(
+  args: Omit<Parameters<typeof createMoves>[0], "relay">,
+): Promise<{ cells: Cells; moves: MovesRuntime | null }> {
+  const cells = createCells(args.cfg);
+  const moves = createMoves({ ...args, relay: cells.relay });
+  await moves?.sweep();
+  return { cells, moves };
 }

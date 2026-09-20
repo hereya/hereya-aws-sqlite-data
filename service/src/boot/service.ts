@@ -15,8 +15,7 @@ import { TxRegistry } from "../tx.ts";
 import { assertVecLoadable } from "../vec.ts";
 import { resolveWorkerPath, WorkerPool } from "../worker-host.ts";
 import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { createCells } from "./cells.ts";
-import { createMoves } from "./moves.ts";
+import { startCellsAndMoves } from "./moves.ts";
 import { createHandoverClient, createOrgQuotaReader, createRegistry } from "./deps.ts";
 import { logDiskVolume } from "./disk-log.ts";
 import { startEvictionSweep, startRegistryPoller, startTxSweeper } from "./loops.ts";
@@ -95,11 +94,8 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     announcedAtMs = Date.now();
   }
 
-  // Settle the database moves a dead process left behind BEFORE placement is
-  // read: what the restore below lists as "ours" must already be decided.
-  const cells = createCells(cfg);
-  const moves = createMoves({ cfg, registry, manager, limiter, sync, txRegistry, relay: cells.relay });
-  await moves?.sweep();
+  // Orphaned database moves are settled BEFORE placement is read (boot/moves.ts).
+  const { cells, moves } = await startCellsAndMoves({ cfg, registry, manager, limiter, sync, txRegistry });
 
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
   const servedAtBoot = await sync.bootRestoreAll();
@@ -169,8 +165,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   markWriter(cfg.dbDir);
   bootTimer.mark("litestream");
 
-  // 6. announce ourselves to the API Gateway path (Cloud Map) and to the other
-  // cells (`_vms`), only once the API is actually able to answer
+  // 6. enter Cloud Map and tell the other cells (`_vms`) — only once the API can answer
   const { cloudMap, peerWatch } = await cells.join(port);
   // The boot ENDS here: until this registration lands, API Gateway has no
   // target and every request is a 500 (see the connector's dataapi-retry.ts).
@@ -199,9 +194,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   shutdownRef = shutdown;
   if (opts.installSignalHandlers !== false) shutdown.install();
 
-  console.log(
-    JSON.stringify({ type: "ready", port, apps: servedAtBoot.length, registryMode: cfg.registryMode }),
-  );
+  console.log(JSON.stringify({ type: "ready", port, apps: servedAtBoot.length, registryMode: cfg.registryMode }));
 
   return {
     server,
