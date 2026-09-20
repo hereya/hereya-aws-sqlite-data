@@ -102,6 +102,12 @@ export function buildServer(deps: ServerDeps): Server {
             await registry.reload();
             payload = { status: "reloaded" };
           }
+          // No pair, so no holder: EVERY cell must drop its caches, or the
+          // one that was not asked keeps believing a placement that changed.
+          if (deps.relay && !isRelayed(req)) {
+            const cells = await deps.relay.broadcast({ method: "POST", path: "/admin/sync", body: "{}" });
+            payload = { ...(payload as object), cells };
+          }
           break;
         case "/admin/delete-app": {
           // Deliberately NO active-status check: the connector flips the
@@ -136,6 +142,7 @@ export function buildServer(deps: ServerDeps): Server {
             return;
           }
         } catch (relayErr) {
+          err = relayErr;
           svcErr = toServiceError(relayErr);
         }
       }

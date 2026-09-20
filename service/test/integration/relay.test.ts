@@ -50,6 +50,9 @@ class FakePeers implements PeerLookup {
   async targets(cellId: string): Promise<VmRow[]> {
     return this.rows.filter((r) => r.cellId === cellId);
   }
+  async others(cellId: string): Promise<VmRow[]> {
+    return this.rows.filter((r) => r.cellId !== cellId);
+  }
   reload(): void {
     this.reloads += 1;
   }
@@ -200,4 +203,23 @@ test("no cell announced for the holder = 503, and the directory is re-read first
   const res = await call(a.baseUrl, "/query", query("SELECT 1"));
   assert.equal(res.status, 503);
   assert.ok(peers.reloads >= 1);
+});
+
+test("/admin/sync reaches EVERY cell, once: the cell that was not asked must drop its caches too", async () => {
+  // Found on the two-cell trial: a placement row + a sync reached one cell; the
+  // other kept its 30 s cache, believed the new org's app was its own, and
+  // created the database at home.
+  const peers = new FakePeers();
+  const placementA = new FakePlacement("0", "0");
+  const placementB = new FakePlacement("1", "0");
+  const a = await cell(placementA, peers);
+  const b = await cell(placementB, peers);
+  peers.add("0", a.baseUrl);
+  peers.add("1", b.baseUrl);
+
+  const res = await call(a.baseUrl, "/admin/sync", {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.cells.map((c: { cellId: string; status: number }) => [c.cellId, c.status]), [["1", 200]]);
+  assert.equal(placementA.reloads, 1);
+  assert.equal(placementB.reloads, 1, "the peer reloaded — and did not broadcast back");
 });

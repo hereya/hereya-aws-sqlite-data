@@ -96,7 +96,7 @@ if (mode === "probe") {
     const t = Date.now();
     let ok = false;
     try {
-      ok = (await Promise.race([signedCall(api, "/query", { org_id: ORG, app_id: "scale-000", sql: "SELECT 1" }, region), new Promise((_, r) => setTimeout(() => r(new Error("t/o")), 4000))])).status === 200;
+      ok = (await Promise.race([signedCall(api, "/query", { org_id: process.env.PROBE_ORG ?? ORG, app_id: process.env.PROBE_APP ?? "scale-000", sql: "SELECT 1" }, region), new Promise((_, r) => setTimeout(() => r(new Error("t/o")), 4000))])).status === 200;
     } catch { ok = false; }
     if (!ok && downSince === null) { downSince = t; console.log(`${new Date(t).toISOString()} DOWN`); }
     if (ok && downSince !== null) {

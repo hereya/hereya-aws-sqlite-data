@@ -22,7 +22,7 @@ const api = outputs.dataApiUrl;
 const table = outputs.registryTableName;
 const ddb = new DynamoDBClient({ region });
 const ORIGIN_ORG = "scale-org"; // seeded by handover-scale.mjs, no placement row → cell 0
-const CELL1_ORG = "cell1-org"; // placed on cell 1 by an ORG row, before its first database
+const CELL1_ORG = process.env.CELL1_ORG ?? "cell1-org"; // placed on cell 1 by an ORG row, before its first database
 const CELL1_APPS = Array.from({ length: 10 }, (_, i) => `c1-${String(i).padStart(2, "0")}`);
 
 let failures = 0;

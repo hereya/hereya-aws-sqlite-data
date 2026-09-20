@@ -44,6 +44,8 @@ export interface VmIdentity {
 export interface PeerLookup {
   /** The serving instances of a cell, most recently announced first. */
   targets(cellId: string): Promise<VmRow[]>;
+  /** Every serving instance OUTSIDE a cell, read now — for a broadcast. */
+  others(cellId: string): Promise<VmRow[]>;
   reload(): void;
 }
 
@@ -76,6 +78,10 @@ export class VmDirectory implements PeerLookup {
   async targets(cellId: string): Promise<VmRow[]> {
     const rows = await this.load();
     return rows.filter((r) => r.cellId === cellId && r.state === "serving").sort((a, b) => b.atMs - a.atMs);
+  }
+
+  async others(cellId: string): Promise<VmRow[]> {
+    return (await this.readAll()).filter((r) => r.cellId !== cellId && r.state === "serving");
   }
 
   reload(): void {

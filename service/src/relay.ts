@@ -123,6 +123,24 @@ export class Relay {
     throw new ServiceError("UNAVAILABLE", `cell ${toCell} has no reachable instance; retry shortly`);
   }
 
+  /**
+   * The same request to every instance of every OTHER cell — for what has no
+   * holder, i.e. `/admin/sync`. Found by the two-cell trial: a placement row
+   * followed by a sync reached ONE cell; the other kept its cache for 30 s,
+   * still believed the app was its own, and created the database at home.
+   * Best effort by nature (a cell may be rolling): the caller gets the list.
+   */
+  async broadcast(req: RelayRequest): Promise<{ cellId: string; instanceId: string; status: number }[]> {
+    const targets = await this.peers.others(this.cellId);
+    return Promise.all(
+      targets.map(async ({ cellId, instanceId, ...rest }) => {
+        const status = await this.send({ cellId, instanceId, ...rest }, req).then((r) => r.status, () => 0);
+        if (status !== 200) log({ event: "broadcast-failed", path: req.path, cellId, instanceId, status });
+        return { cellId, instanceId, status };
+      }),
+    );
+  }
+
   private send(target: VmRow, req: RelayRequest): Promise<RelayedResponse> {
     const headers: Record<string, string> = { [RELAY_HEADER]: this.cellId };
     if (req.capHeader !== undefined) headers["x-dilaya-capability"] = req.capHeader;
