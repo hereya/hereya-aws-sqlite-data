@@ -67,6 +67,8 @@ export class Drainer {
   private blockedPasses = 0;
   private skipTicks = 0;
   private orderedAtMs: number | null = null;
+  /** The order changed or was lifted WHILE a pass runs: no further move is started. */
+  private stopRequested = false;
 
   constructor(deps: DrainerDeps) {
     this.deps = deps;
@@ -74,7 +76,8 @@ export class Drainer {
 
   /** One look at the order, and one pass if there is one. NEVER throws. */
   async tick(): Promise<void> {
-    if (this.running || this.deps.isShuttingDown()) return;
+    if (this.deps.isShuttingDown()) return;
+    if (this.running) return this.recheck();
     this.running = true;
     try {
       await this.once();
@@ -84,6 +87,21 @@ export class Drainer {
       log({ event: "tick-failed", message: (err as Error).message });
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * A tick that lands during a pass (the route pokes one on "stop"): "stop" must
+   * mean no further app is paused, not "after the hundred that were queued" —
+   * the real trial lifted an order 5 s into a drain and the pass moved all 86
+   * remaining apps anyway. Unreadable = carry on: blind is no judgement.
+   */
+  private async recheck(): Promise<void> {
+    try {
+      const order = await this.deps.store.readOrder(this.deps.cellId);
+      if (order === null || order.orderedAtMs !== this.orderedAtMs) this.stopRequested = true;
+    } catch (err) {
+      log({ event: "recheck-failed", message: (err as Error).message });
     }
   }
 
@@ -140,9 +158,10 @@ export class Drainer {
     const queue = [...todo].sort((a, b) => deps.sizeOf(a.orgId, a.appId) - deps.sizeOf(b.orgId, b.appId));
     let inARow = 0;
     let lastError: string | null = null;
+    this.stopRequested = false;
     const worker = async (): Promise<void> => {
       for (let app = queue.shift(); app !== undefined; app = queue.shift()) {
-        if (inARow >= BREAKER_FAILURES || deps.isShuttingDown()) return;
+        if (inARow >= BREAKER_FAILURES || this.stopRequested || deps.isShuttingDown()) return;
         const appKey = appKeyOf(app.orgId, app.appId);
         try {
           const res = await deps.moveOut({ orgId: app.orgId, appId: app.appId, toCell: order.toCell, force: order.big === "force" });

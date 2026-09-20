@@ -166,6 +166,21 @@ test("after a blocked pass the next ticks are skipped — a timer only decides t
   assert.equal(state.held.size, 0);
 });
 
+test("stop means STOP: an order lifted during a pass starts no further move", async () => {
+  const { state, drainer } = world(names(30), { concurrency: 1 });
+  state.outcome = (req) => {
+    if (req.appId === "app2") state.order = null; // the operator lifts the order while the third app moves
+    return "moved";
+  };
+  const pass = drainer.tick();
+  await new Promise((r) => setTimeout(r, 12)); // app0 done, app1 or app2 in flight
+  while (state.order !== null) await new Promise((r) => setTimeout(r, 2));
+  await drainer.tick(); // what the route's poke does
+  await pass;
+  assert.ok(state.calls.length <= 4, `${state.calls.length} moves: the queue of 30 was not run to its end`);
+  assert.ok(state.held.size >= 26);
+});
+
 test("a NEW order resets the back-off of the previous one", async () => {
   const { state, drainer } = world(names(3), { concurrency: 1 });
   state.outcome = () => "resumed";
