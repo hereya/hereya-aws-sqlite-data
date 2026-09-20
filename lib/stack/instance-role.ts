@@ -125,6 +125,20 @@ export function createInstanceRole(stack: cdk.Stack, ctx: StackContext): void {
       ],
     }),
   );
+  // The VM directory (service/src/vms.ts): where each cell answers on the
+  // private network, for the VM→VM relay. Same shape as the two grants above —
+  // only the fixed `_vms` partition, never an org or app row. DeleteItem so a
+  // cell can clear the rows its own past instances left behind.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "VmDirectory",
+      actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"],
+      resources: [table.tableArn],
+      conditions: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["_vms"] },
+      },
+    }),
+  );
   // Describe* has no resource-level scoping in Auto Scaling; read-only.
   role.addToPolicy(
     new iam.PolicyStatement({

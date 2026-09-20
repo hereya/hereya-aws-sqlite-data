@@ -5,10 +5,15 @@ import type { StackContext } from "./context.ts";
 import { input } from "./inputs.ts";
 
 export function createUserData(stack: cdk.Stack, ctx: StackContext): void {
+  // --- Launch template + self-healing Spot singleton ----------------------
+  ctx.userData = buildCellUserData(stack, ctx, "0");
+}
+
+/** One cell's user data: identical for every cell but for `CELL_ID` (cells.ts). */
+export function buildCellUserData(stack: cdk.Stack, ctx: StackContext, cellId: string): ec2.UserData {
   const { table, bucket, artifact, artifactParam, discoveryService, capabilitySecret } = ctx;
 
-  // --- Launch template + self-healing Spot singleton ----------------------
-  ctx.userData = ec2.UserData.custom(
+  return ec2.UserData.custom(
     buildUserData({
       awsRegion: stack.region,
       artifactParamName: artifactParam.parameterName,
@@ -64,10 +69,10 @@ export function createUserData(stack: cdk.Stack, ctx: StackContext): void {
         HEARTBEAT_DIMENSION: stack.stackName,
         IMDS_ENABLED: "1",
         CLOUDMAP_SERVICE_ID: discoveryService.serviceId,
-        // The stack runs ONE cell, the origin: it owns every app that has no
-        // placement row (service/src/placement.ts). Stated rather than left to
-        // the default, so a second cell cannot appear without choosing its id.
-        CELL_ID: "0",
+        // "0" is the origin: it owns every app that has no placement row
+        // (service/src/placement.ts). Stated rather than left to the default,
+        // so a second cell cannot appear without choosing its id (cells.ts).
+        CELL_ID: cellId,
         // Capability-token validation: the service fetches the secret by ARN
         // at boot. Enforcement defaults OFF (rollout-compat window) — flip via
         // the capabilityEnforce input once every connector mints tokens.
