@@ -23,6 +23,11 @@ export interface Registry {
   lookup(orgId: string, appId: string): Promise<RegistryStatus>;
   listActive(): Promise<AppRef[]>;
   reload(): Promise<void>;
+  /**
+   * Whether THIS cell holds the app (placement.ts). Absent = a registry with no
+   * notion of placement, i.e. one cell that holds everything.
+   */
+  heldHere?(orgId: string, appId: string): Promise<boolean>;
 }
 
 interface FileEntry {

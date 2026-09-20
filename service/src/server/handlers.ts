@@ -30,7 +30,7 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     // leak whether the org exists.
     await deps.quota?.assertWriteAllowed(q.orgId, q.sql);
     const appKey = appKeyOf(q.orgId, q.appId);
-    limiter.acquire(appKey);
+    await limiter.admit(appKey);
     try {
       const useTx = q.transactionId !== undefined;
       if (useTx) txRegistry.use(q.transactionId!, appKey);
@@ -69,7 +69,7 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     await authorize(q.orgId, q.appId);
     await deps.quota?.assertWriteAllowed(q.orgId, q.sql);
     const appKey = appKeyOf(q.orgId, q.appId);
-    limiter.acquire(appKey);
+    await limiter.admit(appKey);
     try {
       const useTx = q.transactionId !== undefined;
       const worker = manager.workerFor(q.orgId, q.appId);
@@ -103,7 +103,7 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     if (txRegistry.hasOpenTx(appKey)) {
       throw new ServiceError("BAD_REQUEST", "this app already has an open transaction (one at a time)");
     }
-    limiter.acquire(appKey);
+    await limiter.admit(appKey);
     try {
       const worker = manager.workerFor(q.orgId, q.appId);
       await worker.control("begin", cfg.txOpTimeoutMs);
@@ -128,7 +128,7 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     } else {
       txRegistry.use(q.transactionId!, appKey);
     }
-    limiter.acquire(appKey);
+    await limiter.admit(appKey);
     try {
       const worker = manager.workerFor(q.orgId, q.appId);
       await worker.control(action, cfg.txOpTimeoutMs);

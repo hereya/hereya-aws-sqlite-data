@@ -10,6 +10,7 @@ export type ErrorCode =
   | "SQL_ERROR"
   | "TX_NOT_FOUND"
   | "TX_EXPIRED"
+  | "MISPLACED"
   | "UNAVAILABLE"
   | "INTERNAL";
 
@@ -28,6 +29,9 @@ const STATUS: Record<ErrorCode, number> = {
   SQL_ERROR: 400,
   TX_NOT_FOUND: 409,
   TX_EXPIRED: 409,
+  // Active, but held by another cell (placement.ts). 421 Misdirected Request:
+  // nothing ran here, and nothing may — this cell must not even restore it.
+  MISPLACED: 421,
   UNAVAILABLE: 503,
   INTERNAL: 500,
 };

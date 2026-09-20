@@ -161,6 +161,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
       serviceId: cfg.cloudMapServiceId,
       region: cfg.awsRegion,
       port,
+      cellId: cfg.cellId,
     });
     await cloudMap.register();
   }

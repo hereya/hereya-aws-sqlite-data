@@ -49,6 +49,7 @@ export async function startTestService(
     registryMode: "file",
     registryFile,
     registryTable: "",
+    cellId: "0",
     awsRegion: "eu-west-1",
     sqlTimeoutMs: 1500,
     txOpTimeoutMs: 3000,
