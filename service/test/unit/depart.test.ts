@@ -12,7 +12,7 @@ import type { Registry } from "../../src/registry.ts";
 import { AppSync } from "../../src/sync.ts";
 import { MOVED_DIR, sweepMoved } from "../../src/sync/depart.ts";
 
-function fixture(opts: { detachFails?: boolean } = {}) {
+function fixture(opts: { detachFails?: boolean; active?: () => string[] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "depart-"));
   const dbPath = (o: string, a: string) => join(dir, o, a, "app.db");
   const calls: string[] = [];
@@ -36,7 +36,7 @@ function fixture(opts: { detachFails?: boolean } = {}) {
       return true;
     },
   } as unknown as Litestream;
-  const registry = { reload: async () => {}, listActive: async () => ["app-a", "app-b"].map((appId) => ({ orgId: "org", appId })) } as unknown as Registry;
+  const registry = { reload: async () => {}, listActive: async () => (opts.active?.() ?? ["app-a", "app-b"]).map((appId) => ({ orgId: "org", appId })) } as unknown as Registry;
   const manager = { dbPath, removeApp: async (_o: string, a: string) => void calls.push(`close(${a})`) } as unknown as AppManager;
   return { dir, dbPath, calls, sync: new AppSync(registry, manager, ls, 2) };
 }
@@ -101,4 +101,17 @@ test("arrival: a stale copy from an earlier stay is wiped; a copy that is being 
   await f.sync.bootRestoreAll();
   await assert.rejects(f.sync.move.clearForArrival("org", "app-a"), /already serves/);
   assert.equal(existsSync(f.dbPath("org", "app-a")), true);
+});
+
+test("the reconcile lands between the target's claim and the mover's read: the file is NOT deleted under it", async () => {
+  let active = ["app-a", "app-b"];
+  const f = fixture({ active: () => active });
+  await f.sync.bootRestoreAll();
+  f.sync.move.markDeparting("org", "app-a");
+  await f.sync.move.detach("org", "app-a");
+  active = ["app-b"]; // placement now says the target holds it
+  assert.deepEqual(await f.sync.syncOnce(), { added: 0, removed: 0 });
+  assert.equal(existsSync(f.dbPath("org", "app-a")), true, "the mover sets it aside; the poll must not delete it first");
+  f.sync.move.forget("org", "app-a");
+  assert.equal(readdirSync(join(f.dir, MOVED_DIR)).length, 1);
 });

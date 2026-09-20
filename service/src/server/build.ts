@@ -6,7 +6,7 @@ import { createGate } from "./gate.ts";
 import { createHandlers } from "./handlers.ts";
 import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, readBody, send, sendRaw } from "./http.ts";
 import { parseMoveApp, parseMoveIn } from "./move-routes.ts";
-import { createRelayOut, isRelayed } from "./relay-out.ts";
+import { createRelayOut, isRelayed, ServeHere } from "./relay-out.ts";
 
 export function buildServer(deps: ServerDeps): Server {
   const { cfg, registry, manager, txRegistry } = deps;
@@ -19,7 +19,7 @@ export function buildServer(deps: ServerDeps): Server {
   );
 
   return createServer((req, res) => {
-    void route(req, res);
+    void handle(req, res);
   });
 
   /**
@@ -32,7 +32,7 @@ export function buildServer(deps: ServerDeps): Server {
     if (!(await registry.heldHere(orgId, appId))) registry.reloadPlacement?.();
   }
 
-  async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handle(req: IncomingMessage, res: ServerResponse, again?: { body: unknown }): Promise<void> {
     const started = Date.now();
     const url = new URL(req.url ?? "/", "http://localhost");
     const route = `${req.method} ${url.pathname}`;
@@ -68,7 +68,7 @@ export function buildServer(deps: ServerDeps): Server {
       if (req.method !== "POST") {
         throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
       }
-      body = await readBody(req, cfg.maxRequestBytes);
+      body = again ? again.body : await readBody(req, cfg.maxRequestBytes);
       if (typeof body === "object" && body !== null) {
         orgId = (body as Record<string, unknown>).org_id as string | undefined;
         appId = (body as Record<string, unknown>).app_id as string | undefined;
@@ -159,6 +159,8 @@ export function buildServer(deps: ServerDeps): Server {
             return;
           }
         } catch (relayErr) {
+          // Once: a second ServeHere would mean placement flapping, and is a 500.
+          if (relayErr instanceof ServeHere && !again) return handle(req, res, { body });
           err = relayErr;
           svcErr = toServiceError(relayErr);
         }

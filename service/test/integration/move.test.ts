@@ -100,33 +100,32 @@ test("moved under load: every acknowledged write is on the target, once — aske
   assert.equal((await call(a.baseUrl, "/query", q("CREATE TABLE t (v INTEGER)"))).status, 200);
 
   const acked: number[] = [];
-  const refused: number[] = [];
+  const refused: string[] = [];
   let stop = false;
   const writer = async (base: string, offset: number): Promise<void> => {
     for (let i = offset; !stop; i += 2) {
-      const res = await call(base, "/query", q(`INSERT INTO t VALUES (${i})`));
+      const res = await call(base, "/query", q(`INSERT INTO t VALUES (${i})`)).catch((err: Error) => ({ status: 0, body: `${err.message} ${String(err.cause ?? "")}` }));
       if (res.status === 200) acked.push(i);
-      else {
-        // The only refusal a client may see is "nothing ran, retry".
-        assert.equal(res.status, 503, JSON.stringify(res.body));
-        refused.push(i);
-      }
+      else refused.push(`${res.status} ${JSON.stringify(res.body)}`); // judged below
     }
   };
   const writers = Promise.all([writer(a.baseUrl, 0), writer(b.baseUrl, 1)]);
   await sleep(150);
   // Asked of cell 1, which does not hold the app: relayed to the holder.
-  const moved = await call(b.baseUrl, "/admin/move-app", { org_id: ORG, app_id: APP, to_cell: "1" });
+  const moved = await call(b.baseUrl, "/admin/move-app", { org_id: ORG, app_id: APP, to_cell: "1" }).finally(() => sleep(150));
+  stop = true; // BEFORE any assertion: a writer left running keeps the process alive
+  await writers;
   assert.equal(moved.status, 200, JSON.stringify(moved.body));
   assert.equal(moved.body.status, "moved");
-  await sleep(150);
-  stop = true;
-  await writers;
 
   assert.deepEqual(record.log, ["begin", "a_stopped", "claim", "finalize"]);
   const rows = await call(b.baseUrl, "/query", q("SELECT v FROM t ORDER BY v"));
   const onTarget = rows.body.records.map((r: Array<{ longValue: number }>) => r[0]!.longValue);
-  assert.deepEqual(onTarget, [...acked].sort((x, y) => x - y), `refused: ${refused.length}`);
+  assert.deepEqual(onTarget, [...acked].sort((x, y) => x - y));
+  // Found on the real two-cell trial: a statement that entered through the
+  // TARGET cell, was relayed to the source and parked there, came back as a
+  // 421 once the app had arrived — and was answered 503 instead of served.
+  assert.deepEqual(refused, [], "nobody sees the move: parked, then served where the app now is");
   const before = acked.filter((v) => v % 2 === 0).length;
   assert.ok(before > 3 && acked.length - before > 3, "both cells carried writes, before and after");
   // The source kept nothing it could serve, and still answers — through the relay.

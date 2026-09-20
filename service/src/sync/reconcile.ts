@@ -63,6 +63,10 @@ export async function doSync(state: SyncState): Promise<{ added: number; removed
   const gone: LitestreamApp[] = [];
   for (const [key, app] of [...state.served]) {
     if (target.has(key)) continue;
+    // Leaving through a MOVE: the mover settles it (sync/depart.ts). The poll
+    // can land between the target's claim and that — and deleting the file
+    // here is what the mover's one-hour safety copy was supposed to prevent.
+    if (state.departing.has(key)) continue;
     state.served.delete(key);
     state.replicated.delete(key);
     await state.manager.removeApp(app.orgId, app.appId);

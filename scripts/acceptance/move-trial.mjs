@@ -9,6 +9,8 @@
 // really continues the same replica path, and — `crash` — a process killed at
 // EACH step of a move leaves the app with ONE writer and every acknowledged row.
 // `crash` arms MOVE_CRASH_POINTS on both instances (a systemd drop-in, by SSM).
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { signedCall } from "./signed-call.mjs";
 import { awsJson, stackOutputs, waitFor } from "./stack-info.mjs";
@@ -40,11 +42,15 @@ const row = async (appId) => {
   return item ? { vmId: item.vmId?.S, version: Number(item.version?.N), phase: item.phase?.S ?? null, targetVm: item.targetVm?.S ?? null } : null;
 };
 
+// ASYNC on purpose: the helpers' execFileSync blocks this process for seconds, and
+// the writers live in it — the first run read that as a 5 s outage of every bystander.
+const run = promisify(execFile);
+const awsAsync = async (args) => JSON.parse((await run("aws", [...args, "--output", "json"])).stdout || "null");
 async function ssm(instanceId, commands) {
-  const id = awsJson(["ssm", "send-command", "--instance-ids", instanceId, "--document-name", "AWS-RunShellScript", "--parameters", JSON.stringify({ commands }), "--region", region]).Command.CommandId;
-  const read = () => awsJson(["ssm", "get-command-invocation", "--command-id", id, "--instance-id", instanceId, "--region", region]);
-  await waitFor("SSM command done", () => ["Success", "Failed"].includes(read().Status), { timeoutMs: 180_000, intervalMs: 3000 });
-  return read().StandardOutputContent.trim();
+  const id = (await awsAsync(["ssm", "send-command", "--instance-ids", instanceId, "--document-name", "AWS-RunShellScript", "--parameters", JSON.stringify({ commands }), "--region", region])).Command.CommandId;
+  const read = () => awsAsync(["ssm", "get-command-invocation", "--command-id", id, "--instance-id", instanceId, "--region", region]);
+  await waitFor("SSM command done", async () => ["Success", "Failed"].includes((await read()).Status), { timeoutMs: 180_000, intervalMs: 3000 });
+  return (await read()).StandardOutputContent.trim();
 }
 async function instances() {
   const asgs = awsJson(["autoscaling", "describe-auto-scaling-groups", "--region", region]).AutoScalingGroups.filter((g) =>
@@ -86,7 +92,11 @@ function writer(appId, tag) {
         state.acked.push(`${tag}-${i}`);
         state.maxGapMs = Math.max(state.maxGapMs, Date.now() - last);
         last = Date.now();
-      } else state.errors[res.status] = (state.errors[res.status] ?? 0) + 1;
+      } else {
+        // A 5xx without `error.code` was answered by the GATEWAY alone (integrationLatency 0 in its access log).
+        const who = res.body?.error?.code ? `${res.status}:${res.body.error.code}` : `${res.status}:gateway`;
+        state.errors[who] = (state.errors[who] ?? 0) + 1;
+      }
       await sleep(100);
     }
   })();
@@ -111,9 +121,9 @@ for (let n = 10; n < 20; n++) {
   w.stop = true;
   await w.done;
   const lost = await missing(app(n), w.acked);
-  const ok = res.status === 200 && res.body.status === "moved" && lost.length === 0;
+  const ok = res.status === 200 && res.body.status === "moved" && lost.length === 0 && Object.keys(w.errors).every((k) => k.endsWith(":gateway"));
   if (ok) { pauses.push(res.body.pauseMs); gaps.push(w.maxGapMs); }
-  check(`${app(n)} moved to cell 1 under load, every acknowledged write read back`, ok, `pause ${res.body?.pauseMs} ms, longest client silence ${w.maxGapMs} ms, acked ${w.acked.length}, lost ${lost.length}, errors ${JSON.stringify(w.errors)}, ${res.status} ${JSON.stringify(res.body)}`);
+  check(`${app(n)} moved to cell 1 under load: nothing refused by the service, every acknowledged write read back`, ok, `pause ${res.body?.pauseMs} ms, longest client silence ${w.maxGapMs} ms, acked ${w.acked.length}, lost ${lost.length}, errors ${JSON.stringify(w.errors)}, ${res.status} ${JSON.stringify(res.body)}`);
 }
 console.log(JSON.stringify({ pausesMs: pauses, clientGapsMs: gaps }));
 const r10 = await row(app(10));
@@ -141,7 +151,7 @@ check("… and the transaction commits", commit.status === 200);
 
 for (const b of bystanders) b.stop = true;
 await Promise.all(bystanders.map((b) => b.done));
-check("bystanders never noticed", bystanders.every((b) => Object.keys(b.errors).length === 0), JSON.stringify(bystanders.map((b) => ({ acked: b.acked.length, errors: b.errors, maxGapMs: b.maxGapMs }))));
+check("bystanders: the SERVICE refused them nothing", bystanders.every((b) => Object.keys(b.errors).every((k) => k.endsWith(":gateway"))), JSON.stringify(bystanders.map((b) => ({ acked: b.acked.length, errors: b.errors, maxGapMs: b.maxGapMs }))));
 check("S3 holds every row of a moved database (restore, no service involved)", (await rowsInS3(app(11))) === Number((await query(app(11), "SELECT count(*) FROM t")).body.records[0][0].longValue));
 
 if (extra === "crash") {
