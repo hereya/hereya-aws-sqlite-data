@@ -48,7 +48,9 @@ export class DrainAdmin {
     if ((await deps.store.readOrder(req.toCell)) !== null) {
       throw new ServiceError("BAD_REQUEST", `cell ${req.toCell} is itself being drained: lift that order first`);
     }
-    await deps.store.putOrder({ ...req, orderedAtMs: (deps.now ?? Date.now)() });
+    // Field by field: the route hands over its parsed request, `action` included.
+    const { cellId, toCell, big, leave } = req;
+    await deps.store.putOrder({ cellId, toCell, big, leave, orderedAtMs: (deps.now ?? Date.now)() });
     return this.statusOf(req.cellId, await deps.vms());
   }
 

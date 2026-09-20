@@ -58,6 +58,7 @@ function world(apps: string[], opts: { sizes?: Record<string, number>; concurren
       enter: async () => void (state.inCloudMap = true),
     }),
     isShuttingDown: () => false,
+    gatewayQuietMs: () => 1234,
     concurrency: opts.concurrency ?? 8,
     maxBytes: 100,
   });
@@ -96,6 +97,7 @@ test("an emptied cell leaves Cloud Map — and only when the order says so", asy
   await leaving.drainer.tick();
   assert.equal(leaving.state.inCloudMap, false);
   assert.equal(leaving.state.progress?.inCloudMap, false);
+  assert.equal(leaving.state.progress?.gatewayQuietMs, 1234, "out of Cloud Map is not out of the gateway: the operator reads this before replacing the instance");
 
   const staying = world(names(2));
   staying.state.order = { ...ORDER, leave: false };

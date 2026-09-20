@@ -30,6 +30,8 @@ export interface ServerDeps {
   moves?: Moves;
   /** Emptying a cell into another (drain/). Absent = the routes answer 400. */
   drains?: Drains;
+  /** A request that came through the GATEWAY (not relayed by a peer), /health excepted. */
+  onGatewayRequest?: () => void;
   health?: () => Record<string, unknown>;
   /** While draining (shutdown/spot notice), everything but /health gets 503. */
   isDraining?: () => boolean;

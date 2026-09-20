@@ -111,6 +111,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     quota,
     ...(cells.relay ? { relay: cells.relay } : {}),
     ...adminRoutes,
+    onGatewayRequest: () => drain?.sawGatewayRequest(),
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
     recordWrite: (orgId, appId, changed) => writeStats.record(orgId, appId, changed),
     onAdminSync: () => (drain?.routes.poke(), sync.syncOnce()),

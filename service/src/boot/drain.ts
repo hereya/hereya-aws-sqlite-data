@@ -12,6 +12,8 @@ import type { MovesRuntime } from "./moves.ts";
 
 export interface DrainRuntime {
   routes: Drains;
+  /** Wired to the server: a request came through the gateway. */
+  sawGatewayRequest(): void;
   /** Registry poll and `/admin/sync`: look at this cell's order. Never throws. */
   tick(): Promise<void>;
   /**
@@ -42,6 +44,7 @@ export function createDrain(args: {
   const { directory } = cells;
   if (moves === null || directory === null || !cfg.registryTable) return null;
   const store = new DdbDrainStore({ tableName: cfg.registryTable, region: cfg.awsRegion });
+  let lastGatewayRequestAt: number | null = null;
   const drainer = new Drainer({
     cellId: cfg.cellId,
     instanceId: () => cells.cloudMap?.registered?.instanceId ?? "unknown",
@@ -60,12 +63,14 @@ export function createDrain(args: {
     // Null until boot step 6: before it there is nothing to leave.
     presence: () => cells.cloudMap,
     isShuttingDown,
+    gatewayQuietMs: () => (lastGatewayRequestAt === null ? null : Date.now() - lastGatewayRequestAt),
     concurrency: cfg.bootRestoreConcurrency,
     maxBytes: cfg.moveMaxBytes,
   });
   const admin = new DrainAdmin({ cellId: cfg.cellId, store, vms: () => directory.readAll() });
   return {
     routes: { admin, poke: () => void drainer.tick() },
+    sawGatewayRequest: () => void (lastGatewayRequestAt = Date.now()),
     tick: () => drainer.tick(),
     startsOut: async (heldAtBoot) => {
       if (heldAtBoot > 0) return false;

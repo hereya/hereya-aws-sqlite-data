@@ -53,6 +53,8 @@ export function buildServer(deps: ServerDeps): Server {
         });
         return;
       }
+      // What an emptied cell waits to see stop before its instance is replaced (drain/drainer.ts).
+      if (!isRelayed(req)) deps.onGatewayRequest?.();
       if (deps.isDraining?.()) {
         throw new ServiceError("UNAVAILABLE", "instance is shutting down; retry shortly");
       }

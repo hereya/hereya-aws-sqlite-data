@@ -47,6 +47,8 @@ export interface DrainerDeps {
   /** Null until the instance has joined (boot step 6), and in local-dev mode. */
   presence: () => Presence | null;
   isShuttingDown: () => boolean;
+  /** Ms since the last request that came through the gateway; null = none yet. */
+  gatewayQuietMs: () => number | null;
   concurrency: number;
   maxBytes: number;
   now?: () => number;
@@ -179,6 +181,7 @@ export class Drainer {
       instanceId: deps.instanceId(),
       state: held === 0 ? "empty" : blocked ? "blocked" : "draining",
       inCloudMap: deps.presence()?.inCloudMap ?? true,
+      gatewayQuietMs: deps.gatewayQuietMs(),
       held,
       moved: this.moved,
       failed: this.failed,

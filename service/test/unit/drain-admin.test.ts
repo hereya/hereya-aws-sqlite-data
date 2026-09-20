@@ -30,7 +30,8 @@ function admin(rows: VmRow[]) {
 
 test("start writes the order, and nothing else", async () => {
   const { store, admin: a } = admin([vm("0"), vm("1")]);
-  const status = await a.start({ cellId: "0", toCell: "1", big: "skip", leave: true });
+  // As the route calls it: its parsed request also carries `action`, which is not part of an order.
+  const status = await a.start({ action: "start", cellId: "0", toCell: "1", big: "skip", leave: true } as never);
   assert.deepEqual(store.orders.get("0"), { cellId: "0", toCell: "1", big: "skip", leave: true, orderedAtMs: 42 });
   assert.equal(status.order?.toCell, "1");
   assert.equal(status.progress, null);

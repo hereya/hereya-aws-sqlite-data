@@ -32,6 +32,15 @@ export interface DrainProgress {
   /** `empty` = holds nothing · `blocked` = the last pass gave up (see lastError). */
   state: "draining" | "empty" | "blocked";
   inCloudMap: boolean;
+  /**
+   * Ms since this instance last received a request THROUGH THE GATEWAY (null =
+   * never). Leaving Cloud Map is not leaving the gateway: it keeps its targets
+   * for a while (measured on the trial stack: requests still arrived ~25 s
+   * later, and replacing the instance then showed clients its 503s). An emptied
+   * cell is safe to replace once this has grown past a couple of minutes — read
+   * on this machine's clock alone.
+   */
+  gatewayQuietMs: number | null;
   held: number;
   moved: number;
   failed: number;
