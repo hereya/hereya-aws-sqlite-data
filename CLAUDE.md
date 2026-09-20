@@ -523,6 +523,11 @@ consistent `GetItem` per registry poll and the `ReplicationLagMaxSeconds` series
   - **The order stays in force until lifted.** An app born meanwhile on a drained ORIGIN (no row =
     the origin) is moved at the next poll. Lifting the order (`stop`) is what re-registers.
   - An unreadable order is no judgement: no move, no leave, no re-entry.
+  - ⚠️ **Out of Cloud Map is NOT out of the gateway.** The VPC link keeps its targets for a while:
+    on the trial stack requests still reached the cell ~10–25 s after it had deregistered, and
+    an instance replaced in that window showed clients its shutdown 503s. The cell measures it
+    itself: `progress.gatewayQuietMs` = ms since the last request that came THROUGH the gateway
+    (not relayed), on its own clock. **Replace the instance only once it is past ~2 minutes.**
 - `start` is refused when the target is itself being drained (two cells passing the same
   databases back and forth, one pause each time), or when either cell has no serving instance.
 
@@ -530,9 +535,45 @@ consistent `GetItem` per registry poll and the `ReplicationLagMaxSeconds` series
 while the others take `amiId`/the pin. A launch-template change rolls ITS cell at the deploy that
 carries it; one image for all would roll every cell at once, databases on board. The procedure,
 from one cell: (1) bump the pin, deploy with `vmCount=2` and `amiIdByCell=0=<old>` — cell 1 is born
-on the new image, cell 0 does not move; (2) drain 0 → 1, wait for `empty` + out of Cloud Map;
+on the new image, cell 0 does not move; (2) drain 0 → 1, wait for `empty`, `inCloudMap: false` AND `gatewayQuietMs` ≥ 120 000;
 (3) deploy without `amiIdByCell` — cell 0 rolls, empty and unseen; (4) `stop` the order, drain
 1 → 0, `stop`; (5) deploy with `vmCount=1`. Drop the override when done: `check:ami` reads the pin.
+
+- **A progress report only speaks for the order it names** (`orderedAtMs`): it outlives its order,
+  and the first real run read the "empty" of the PREVIOUS drain as the answer to one ordered a
+  second earlier. `drain-status` shows no progress until the cell has looked at the current order.
+
+**Tried for real** (trial stack `dilayadev-drain-trial`, `vmCount=2`, handover on, 100 seeded apps,
+destroyed the same night — `scripts/acceptance/drain-trial.mjs`):
+
+- **100 databases emptied in 19–27 s, five full drains over three runs, both ways** (one pass, 8
+  at a time, on t4g.micro): 0 failed move, 0 row left mid-move, **0 acknowledged write lost** on
+  five apps written every 100 ms through it, nothing refused by the service. Longest client
+  silence 1.9–2.8 s, 4.2 s once (against ~1.3 s for a move alone in phase 4: eight restores share
+  one small VM). **21/21 on the final run.** The way
+  back returns every app to a cell that still held an older copy of it (`clearForArrival`).
+- The role really may write both rows in `_vms`; any cell answers the routes; the reverse order
+  is refused while the first stands.
+- The emptied cell left Cloud Map; an app born meanwhile on the drained origin (through the
+  relay) was on the other cell within a poll, its row intact.
+- **Replacing the emptied cell's instance, once `gatewayQuietMs` ≥ 90 s (twice): no VM refused
+  any client, longest silence 0.55 s** over ~3 000 writes on three apps each time. The FIRST run
+  replaced it ~25 s after the cell had left Cloud Map and clients saw four of its shutdown 503s —
+  which is how `gatewayQuietMs` came to exist — against scattered 4–8 s gaps
+  for every org when a cell is rolled with its databases on board (phase 3). The replacement
+  stayed out of Cloud Map; lifting the order brought it back within a poll.
+- `ReplicationLagMaxSeconds` on S3: published by both cells, **max 2.9 s with ~100 idle
+  databases** — `last_sync_at` does advance without writes on S3 too, so the alarm will not fire
+  on a quiet night.
+- Background of that stack, before any drain: ~1 gateway-only 503 per 400–600 requests under
+  concurrent load (`integrationLatency: 0`, no `error.code` — the connector replays those).
+- ⚠️ Found on the way, NOT a drain defect (`t_worker_evict_inflight_503`, proposed): 100 reads
+  in parallel on 100 apps → ~9 × `503 "app is shutting down"` — `MAX_LIVE_WORKERS` is 8 and the
+  pool evicts a worker that has a statement in flight.
+
+- **"stop" means stop**: an order lifted 4 s into a drain left 75 apps where they were, 26 moved,
+  no row mid-move. (The second run's pass had moved all 86 queued apps AFTER the stop — a running
+  pass now re-reads its order when poked, and the route pokes.)
 
 **Three series, three alarms** (`service/src/cell-gauges.ts`, `lib/stack/alarms/moves.ts`), all
 published by the heartbeat under the cell's dimensions, none breaching on silence:

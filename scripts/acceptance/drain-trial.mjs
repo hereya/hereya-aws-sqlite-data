@@ -211,5 +211,13 @@ for (const [cell, Dimensions] of [["0", [{ Name: "stack", Value: stackName }]], 
   check(`cell ${cell}: ReplicationLagMaxSeconds is published, and ~100 mostly idle databases show no lag`, cell === "1" ? values.every((v) => v < 60) : values.length > 0 && values.every((v) => v < 60), `${values.length} datapoints, max ${Math.max(0, ...values).toFixed(1)} s`);
 }
 
+// 7. "stop" means stop: an order lifted a few seconds into a drain leaves the rest where it is
+await call("/admin/drain-cell", { cell: "0", action: "start", to_cell: "1", leave: false }, 35_000);
+await sleep(4000);
+await call("/admin/drain-cell", { cell: "0", action: "stop" }, 35_000);
+await sleep(15_000);
+const halted = await census([...APPS, "newborn"]);
+check("an order lifted mid-drain: the pass stops, part of the apps stayed, no row left mid-move", halted.held[0] > 0 && halted.held[1] > 0 && halted.midMove === 0, JSON.stringify(halted));
+
 console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
