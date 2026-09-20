@@ -67,7 +67,11 @@ export class DrainAdmin {
   }
 
   private async statusOf(cellId: string, rows: VmRow[]): Promise<CellStatus> {
-    const [order, progress] = await Promise.all([this.deps.store.readOrder(cellId), this.deps.store.readProgress(cellId)]);
+    const [order, report] = await Promise.all([this.deps.store.readOrder(cellId), this.deps.store.readProgress(cellId)]);
+    // Found by the real trial: the report of the PREVIOUS order said "empty", and
+    // a drain ordered a second ago was read as finished. A report only speaks
+    // for the order it names; until the cell has looked at the new one, there is none.
+    const progress = report !== null && order !== null && report.orderedAtMs === order.orderedAtMs ? report : null;
     const instances = rows.filter((r) => r.cellId === cellId).map((r) => ({ instanceId: r.instanceId, state: r.state }));
     return { cellId, instances, order, progress };
   }

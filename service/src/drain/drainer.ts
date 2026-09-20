@@ -177,6 +177,7 @@ export class Drainer {
     const { deps } = this;
     const progress: DrainProgress = {
       cellId: deps.cellId,
+      orderedAtMs: order.orderedAtMs,
       toCell: order.toCell,
       instanceId: deps.instanceId(),
       state: held === 0 ? "empty" : blocked ? "blocked" : "draining",

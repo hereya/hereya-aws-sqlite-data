@@ -27,6 +27,8 @@ export interface DrainOrder {
 
 export interface DrainProgress {
   cellId: string;
+  /** The order this report is ABOUT (its orderedAtMs): a report outlives its order, and must never be read as the next one's. */
+  orderedAtMs: number;
   toCell: string;
   instanceId: string;
   /** `empty` = holds nothing · `blocked` = the last pass gave up (see lastError). */

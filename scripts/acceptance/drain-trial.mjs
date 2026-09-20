@@ -150,7 +150,7 @@ check("cell 0 LEFT Cloud Map once empty", JSON.stringify(targets) === '["1"]', J
 await ddb.send(new PutItemCommand({ TableName: table, Item: { org_id: { S: ORG }, sk: { S: "app#newborn" }, appId: { S: "newborn" }, name: { S: "newborn" }, status: { S: "active" }, created_at: { S: new Date().toISOString() } } }));
 await call("/admin/sync", {});
 const born = await query("newborn", "CREATE TABLE IF NOT EXISTS t (k TEXT PRIMARY KEY, v TEXT)");
-const put = await query("newborn", "INSERT INTO t VALUES ('first', 'x')");
+const put = await query("newborn", "INSERT OR REPLACE INTO t VALUES ('first', 'x')"); // OR REPLACE: a second run on the same stack
 check("the newborn is created and written (on the drained origin, through the relay)", born.status === 200 && put.status === 200, `${born.status} ${put.status} ${JSON.stringify(put.body)}`);
 let bornOn = "0";
 for (let i = 0; i < 45 && bornOn !== "1"; i++) { await sleep(2000); bornOn = (await placements()).get(`${ORG}/newborn`)?.vmId ?? "0"; }

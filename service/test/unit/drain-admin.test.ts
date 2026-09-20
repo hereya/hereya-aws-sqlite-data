@@ -52,6 +52,18 @@ test("A into B is refused while B empties itself — two cells would pass the da
   assert.deepEqual([...store.orders.keys()], ["1"]);
 });
 
+test("a report left by a PREVIOUS order is never read as this one's", async () => {
+  const { store, admin: a } = admin([vm("0"), vm("1")]);
+  const old = { cellId: "0", orderedAtMs: 7, toCell: "1", instanceId: "i-0", state: "empty", inCloudMap: false, gatewayQuietMs: null, held: 0, moved: 100, failed: 0, skippedBig: [], passes: 1, lastError: null, atMs: 8 } as const;
+  store.progress.set("0", { ...old, skippedBig: [] });
+  const started = await a.start({ cellId: "0", toCell: "1", big: "skip", leave: true });
+  assert.equal(started.progress, null, "\"empty\" was about the order of 7, this one is 42");
+  store.progress.set("0", { ...old, skippedBig: [], orderedAtMs: 42, state: "draining", held: 60 });
+  assert.equal((await a.status("0")).cells[0]?.progress?.held, 60);
+  await a.stop("0");
+  assert.equal((await a.status("0")).cells[0]?.progress, null, "no order, no progress to report");
+});
+
 test("stop lifts the order; status lists every cell the directory knows", async () => {
   const { store, admin: a } = admin([vm("0"), vm("1")]);
   await a.start({ cellId: "1", toCell: "0", big: "force", leave: false });
