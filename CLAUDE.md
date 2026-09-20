@@ -307,8 +307,38 @@ table, one bucket. **The 5 Data API clients, the app Lambdas' IAM and env do not
   new dimension set is a NEW metric and would orphan every alarm for the length of a roll).
 - ⚠️ **Lowering `vmCount` destroys the cells above it.** Their data survives in S3 but nothing
   re-places it: empty a cell before removing it (phase 4/5 tooling).
-- `/admin/sync` reaches ONE cell. Harmless: `ensureServed` hot-adds on the first request and the
-  30 s poll covers the rest.
+- **`/admin/sync` is BROADCAST to every cell** (`Relay.broadcast`, never re-broadcast; the answer
+  carries `cells: [{cellId, instanceId, status}]`). The first draft said "reaches one cell,
+  harmless" — the trial proved it wrong, see below. The rule for an operator: **placement row →
+  `/admin/sync` → only then the org's first database.** Without the sync, a cell keeps its
+  placement cache for `REGISTRY_CACHE_MS` (30 s) and still believes it is the holder.
+
+**Tried for real** (trial stack `dilayadev-cells-trial`, `vmCount=2`, handover on, 100 seeded apps
+on the origin + 10 in an org placed on cell 1, destroyed the same hour —
+`scripts/acceptance/cells-trial.mjs <stack> kill`, 15/15):
+
+- The joints hold: one Cloud Map registration per cell, both `_vms` rows written with the role as
+  it is, the SG lets one VM reach the other, and **the gateway does spread over both
+  registrations** — the relay ran both ways (509 / 305 requests), none crossed twice. 400 reads
+  over both orgs all correct, client-side p50 112 ms / p95 153 ms (SigV4 + gateway included, about half of them relayed;
+  no one-cell baseline was taken in the same run, so the hop's cost is NOT isolated here).
+- **The defect no test could see.** First run: org row written, `/admin/sync`, 10 apps created —
+  2 of the 10 answered `no such table`. The sync had reached ONE cell; the other still believed
+  "no row = mine", so it CREATED the database at home, and the next statement landed on the real
+  holder. Silent-loss shaped (an acknowledged `CREATE TABLE` on a file the reconcile then
+  deletes). Hence the broadcast; re-run on a FRESH org: 10/10 born on cell 1, none on cell 0.
+- **A crash, not a terminate.** `ec2 terminate-instances` is a clean shutdown: the service drains,
+  deregisters and retires its row — the origin's org saw 3 errors in 10 s and nobody had anything
+  to evict. With an immediate power-off (sysrq `o`): **cell 0 evicted its dead peer after 44 s**;
+  until then the ORIGIN's org — whose cell was perfectly healthy — lost 8 of its ~44 one-per-second probes (the
+  gateway kept sending 1/N to the dead address), and none after. Cell 1 was back on a new
+  instance, restored from S3 with its data, **83 s** after the crash, and cleared its cell's
+  leftovers from `_vms` (2 rows, not 3).
+- **A roll of ANY cell is felt by EVERY org.** Both cells rolled one after the other (handover
+  on): each org saw scattered 4–8 s gaps during BOTH rolls (~16–23 s of failed probe-seconds
+  in a 40 s window, against 19 s for one cell alone) — the gateway's target cache again, now
+  paid once per cell. The connector's retry covers it as before, but N cells do not make a roll
+  cheaper for anyone; that is phase 5's job (drain a cell instead of rolling it).
 
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 

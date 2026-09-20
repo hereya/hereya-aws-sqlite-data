@@ -99,17 +99,23 @@ check("cell 1's counter moves", beatAfter > beatBefore, `${beatBefore} → ${bea
 if (extra === "kill") {
   // 5. cell 1 dies without a word. 1/2 of ALL traffic goes to a dead address
   // until someone removes it — and the only one there is cell 0.
-  console.log(`terminating ${cell1.instanceId} (cell 1) ...`);
+  // ⚠️ NOT `ec2 terminate-instances`: that is a clean shutdown — systemd SIGTERMs the
+  // service, which drains, deregisters and retires its row (tried first: the origin's
+  // org saw 3 errors in 10 s and nobody had anything to evict). A crash says nothing:
+  // sysrq "o" powers the machine off at once, with no shutdown script.
+  console.log(`crashing ${cell1.instanceId} (cell 1): immediate power-off, no drain ...`);
+  aws(["ssm", "send-command", "--instance-ids", cell1.instanceId, "--document-name", "AWS-RunShellScript", "--parameters", JSON.stringify({ commands: ["echo 1 > /proc/sys/kernel/sysrq; (sleep 2; echo o > /proc/sysrq-trigger) &"] }), "--region", region]);
+  await new Promise((r) => setTimeout(r, 4000));
   const killedAt = Date.now();
-  aws(["ec2", "terminate-instances", "--instance-ids", cell1.instanceId, "--region", region]);
   const seen = { origin: { ok: 0, ko: 0, lastKo: 0 }, cell1: { ok: 0, ko: 0, firstOk: 0 } };
   let evictedAt = 0;
-  while (Date.now() - killedAt < 240_000) {
+  while (Date.now() - killedAt < 420_000) {
     const t = Date.now();
     const timed = (p) => Promise.race([p, new Promise((r) => setTimeout(() => r({ status: 0 }), 4000))]).catch(() => ({ status: 0 }));
     const [o, c] = await Promise.all([timed(query(ORIGIN_ORG, "scale-000", "SELECT 1")), timed(query(CELL1_ORG, CELL1_APPS[0], "SELECT 1"))]);
     if (o.status === 200) seen.origin.ok++; else { seen.origin.ko++; seen.origin.lastKo = t - killedAt; }
-    if (c.status === 200) { seen.cell1.ok++; if (evictedAt && !seen.cell1.firstOk) seen.cell1.firstOk = t - killedAt; } else seen.cell1.ko++;
+    if (c.status === 200) { seen.cell1.ok++; if (seen.cell1.ko > 0 && !seen.cell1.firstOk) seen.cell1.firstOk = t - killedAt; } else seen.cell1.ko++;
+    if (seen.cell1.firstOk && t - killedAt > seen.cell1.firstOk + 20_000) break;
     if (!evictedAt && (await vms()).some((v) => v.instanceId === cell1.instanceId && v.state === "evicted")) evictedAt = t - killedAt;
     await new Promise((r) => setTimeout(r, Math.max(0, 1000 - (Date.now() - t))));
   }
