@@ -99,9 +99,12 @@ test("an unreadable placement THROWS — never 'mine', never 'not mine' — and 
   assert.equal(await f.placement.isMine("org", "app-a"), true);
 });
 
-test("a row without an owner is refused, not read as the origin cell", async () => {
+test("a row without an owner: THAT app is unavailable and held by nobody; the cell keeps serving", async () => {
   const f = placementFor("0", { "org/app-a": { phase: "moving" } });
-  await assert.rejects(f.placement.isMine("org", "app-b"), /has no vmId/);
+  await assert.rejects(f.placement.isMine("org", "app-a"), /has no vmId/);
+  assert.equal(await f.placement.isMine("org", "app-b"), true, "one malformed row must not take the cell down");
+  const mine = await new PlacedRegistry(inner, f.placement).listActive();
+  assert.deepEqual(mine.map((r) => r.appId), ["app-b", "app-c"], "never read as the origin's");
 });
 
 test("CELL_ID: absent = origin, and junk is refused at boot", () => {

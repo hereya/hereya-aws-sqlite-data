@@ -63,9 +63,9 @@ export class DdbPlacement implements Placement {
   private readonly tableName: string;
   private readonly cacheMs: number;
   private readonly now: () => number;
-  private owners: Map<string, string> | null = null;
+  private owners: Map<string, string | null> | null = null;
   private loadedAt = 0;
-  private loading: Promise<Map<string, string>> | null = null;
+  private loading: Promise<Map<string, string | null>> | null = null;
 
   constructor(opts: {
     cellId: string;
@@ -85,7 +85,9 @@ export class DdbPlacement implements Placement {
 
   async isMine(orgId: string, appId: string): Promise<boolean> {
     const owners = await this.load();
-    return this.owns(owners, placementKey(orgId, appId));
+    const key = placementKey(orgId, appId);
+    if (owners.get(key) === null) throw new ServiceError("UNAVAILABLE", `placement row ${key} has no vmId`);
+    return this.owns(owners, key);
   }
 
   async filterMine(refs: AppRef[]): Promise<AppRef[]> {
@@ -97,11 +99,13 @@ export class DdbPlacement implements Placement {
     this.owners = null;
   }
 
-  private owns(owners: Map<string, string>, key: string): boolean {
-    return (owners.get(key) ?? ORIGIN_CELL) === this.cellId;
+  private owns(owners: Map<string, string | null>, key: string): boolean {
+    // `has`, not `??`: an ownerless row is stored as null, and null must not
+    // fall through to the origin.
+    return (owners.has(key) ? owners.get(key) : ORIGIN_CELL) === this.cellId;
   }
 
-  private load(): Promise<Map<string, string>> {
+  private load(): Promise<Map<string, string | null>> {
     if (this.owners && this.now() - this.loadedAt < this.cacheMs) return Promise.resolve(this.owners);
     // One read in flight, shared: a burst of requests on a cold cache must not
     // become a burst of Queries.
@@ -111,8 +115,8 @@ export class DdbPlacement implements Placement {
     return this.loading;
   }
 
-  private async read(): Promise<Map<string, string>> {
-    const owners = new Map<string, string>();
+  private async read(): Promise<Map<string, string | null>> {
+    const owners = new Map<string, string | null>();
     let startKey: Record<string, AttributeValue> | undefined;
     try {
       do {
@@ -129,10 +133,14 @@ export class DdbPlacement implements Placement {
         for (const item of res.Items ?? []) {
           const sk = item.sk?.S;
           const vmId = item.vmId?.S;
-          // A row without an owner is not "the origin": it is a row we cannot
-          // read, and guessing is how a database gets two writers.
-          if (!sk || !vmId) throw new Error(`placement row ${sk ?? "?"} has no vmId`);
-          owners.set(sk, vmId);
+          if (!sk) continue;
+          // A row without an owner is not "the origin": guessing is how a
+          // database gets two writers. But it is ONE app's problem — that app
+          // answers 503 and is held by nobody (its replica stays in S3), while
+          // the rest of the cell keeps serving. Failing the whole read would
+          // let one malformed row abort the boot of every org's databases.
+          if (!vmId) console.error(JSON.stringify({ type: "placement", event: "row-without-owner", key: sk }));
+          owners.set(sk, vmId ?? null);
         }
         startKey = res.LastEvaluatedKey;
       } while (startKey);
