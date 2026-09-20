@@ -5,6 +5,15 @@ import type { StackContext } from "./context.ts";
 import { input } from "./inputs.ts";
 
 export function createAsg(stack: cdk.Stack, ctx: StackContext): void {
+  ctx.asg = buildAsg(stack, ctx, "Asg", ctx.launchTemplate);
+}
+
+/**
+ * One cell's group. Everything said below about "the singleton" is true PER
+ * CELL: a cell is one serving instance plus its replacement slot, and the
+ * single-writer invariant is per database — which exactly one cell holds.
+ */
+export function buildAsg(stack: cdk.Stack, ctx: StackContext, id: string, launchTemplate: ec2.LaunchTemplate): autoscaling.AutoScalingGroup {
   // Still a singleton (one instance at a time — no litestream dual-writer),
   // but replacements may land in EITHER public subnet and on either size.
   // Purchasing default is ON-DEMAND: observed reality (eu-west-1, t4g) is
@@ -19,11 +28,11 @@ export function createAsg(stack: cdk.Stack, ctx: StackContext): void {
   // protocol without the overlap is a wait nobody answers. A second parameter
   // would make the dangerous combination expressible; this makes it impossible.
   const handover = input("handoverEnabled", "false") === "true";
-  const asg = new autoscaling.AutoScalingGroup(stack, "Asg", {
+  const asg = new autoscaling.AutoScalingGroup(stack, id, {
     vpc: ctx.vpc,
     vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
     mixedInstancesPolicy: {
-      launchTemplate: ctx.launchTemplate,
+      launchTemplate,
       launchTemplateOverrides: [
         { instanceType: new ec2.InstanceType(ctx.instanceType) },
         { instanceType: new ec2.InstanceType(input("fallbackInstanceType", "t4g.small")) },
@@ -79,8 +88,8 @@ export function createAsg(stack: cdk.Stack, ctx: StackContext): void {
       },
     ];
   }
-  ctx.asg = asg;
   // Capacity rebalance must stay OFF: it launches the replacement while the
   // old instance is alive → two litestream writers on one generation path.
   (asg.node.defaultChild as autoscaling.CfnAutoScalingGroup).capacityRebalance = false;
+  return asg;
 }

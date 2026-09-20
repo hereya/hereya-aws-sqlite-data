@@ -6,6 +6,11 @@ import { input } from "./inputs.ts";
 import { resolveMachineImage } from "./machine-image.ts";
 
 export function createLaunchTemplate(stack: cdk.Stack, ctx: StackContext): void {
+  ctx.launchTemplate = buildLaunchTemplate(stack, ctx, "LaunchTemplate", ctx.userData);
+}
+
+/** Every cell's template is this one, user data apart (cells.ts). */
+export function buildLaunchTemplate(stack: cdk.Stack, ctx: StackContext, id: string, userData: ec2.UserData): ec2.LaunchTemplate {
   // Root volume size. Until 2026-08-25 this was not set AT ALL: the launch
   // template carried no blockDevices, so the ASG silently inherited the AMI's
   // own 8 GB root — a number nobody chose, running in production for four
@@ -29,12 +34,12 @@ export function createLaunchTemplate(stack: cdk.Stack, ctx: StackContext): void 
     );
   }
 
-  ctx.launchTemplate = new ec2.LaunchTemplate(stack, "LaunchTemplate", {
+  return new ec2.LaunchTemplate(stack, id, {
     machineImage: resolveMachineImage(stack, input("amiId", PINNED_AMI_ID).trim()),
     instanceType: new ec2.InstanceType(ctx.instanceType),
     role: ctx.role,
     securityGroup: ctx.instanceSg,
-    userData: ctx.userData,
+    userData,
     requireImdsv2: true,
     associatePublicIpAddress: true,
     // The device name MUST be the AMI's own root device (`/dev/xvda` on

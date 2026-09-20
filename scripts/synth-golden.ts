@@ -31,7 +31,7 @@ const KEYS = [
   "litestreamL0Retention", "litestreamL0RetentionCheckInterval", "litestreamLevelIntervals",
   "litestreamRetention", "litestreamSyncIntervalMs", "maxInflightPerApp", "maxLiveWorkers",
   "memoryHeadroomBytes", "registryPollSeconds", "rootVolumeGb", "servicePort",
-  "spotPercentage", "sqlTimeoutMs", "telegramBotTokenParam", "telegramChatId",
+  "spotPercentage", "sqlTimeoutMs", "telegramBotTokenParam", "telegramChatId", "vmCount",
   "writeStatsFlushMs",
 ];
 

@@ -4,6 +4,7 @@ import type { Registry } from "../registry.ts";
 import type { TxRegistry } from "../tx.ts";
 import type { Limiter } from "../limits.ts";
 import type { DbQuotaGuard } from "../quota.ts";
+import type { Relay } from "../relay.ts";
 
 export interface ServerDeps {
   cfg: Config;
@@ -21,6 +22,8 @@ export interface ServerDeps {
   onAdminSync?: () => Promise<{ added: number; removed: number }>;
   /** Teardown hook for POST /admin/delete-app (connector drop-app flow). */
   onDeleteApp?: (orgId: string, appId: string) => Promise<void>;
+  /** VM→VM relay for an app another cell holds. Absent = the 421 goes out as is. */
+  relay?: Relay;
   health?: () => Record<string, unknown>;
   /** While draining (shutdown/spot notice), everything but /health gets 503. */
   isDraining?: () => boolean;

@@ -10,6 +10,8 @@ export interface Gate {
     appId: string | undefined,
   ) => void;
   authorize: Authorize;
+  /** Throws MISPLACED when another cell holds the app. */
+  assertHeldHere: (orgId: string, appId: string) => Promise<void>;
 }
 
 export function createGate(deps: ServerDeps): Gate {
@@ -45,6 +47,12 @@ export function createGate(deps: ServerDeps): Gate {
     console.warn(JSON.stringify({ type: "cap_missing", route: routeName, orgId, appId }));
   }
 
+  async function assertHeldHere(orgId: string, appId: string): Promise<void> {
+    if (registry.heldHere && !(await registry.heldHere(orgId, appId))) {
+      throw new ServiceError("MISPLACED", "this app is held by another cell");
+    }
+  }
+
   /** Fail-closed org/app check — the VM-side half of the spec §6 double control. */
   async function authorize(orgId: string, appId: string): Promise<void> {
     const status = await registry.lookup(orgId, appId);
@@ -54,13 +62,11 @@ export function createGate(deps: ServerDeps): Gate {
     // Active, but another cell holds it: refuse BEFORE ensureServed. Restoring
     // it here would create a local copy and start a second litestream writer
     // on the holder's replica path — the one thing placement exists to prevent.
-    if (registry.heldHere && !(await registry.heldHere(orgId, appId))) {
-      throw new ServiceError("MISPLACED", "this app is held by another cell");
-    }
+    await assertHeldHere(orgId, appId);
     // Registry says active: make sure the local db is restored before any
     // worker can create an empty file that would shadow the S3 replica.
     if (deps.ensureServed) await deps.ensureServed(orgId, appId);
   }
 
-  return { enforceCapability, authorize };
+  return { enforceCapability, authorize, assertHeldHere };
 }

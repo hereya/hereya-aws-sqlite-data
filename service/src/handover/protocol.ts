@@ -45,6 +45,8 @@ import {
 export interface HandoverDeps {
   client: DynamoDBClient;
   tableName: string;
+  /** Whose roll this is (keys.ts). Absent = the origin cell. */
+  cellId?: string;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }

@@ -59,6 +59,8 @@ export interface StackContext {
   userData: ec2.UserData;
   launchTemplate: ec2.LaunchTemplate;
   asg: autoscaling.AutoScalingGroup;
+  /** The cells BEYOND the origin (cells.ts). Empty unless `vmCount` > 1. */
+  extraCells: { cellId: string; asg: autoscaling.AutoScalingGroup }[];
 
   // --- alarms ---
   alertTopic: sns.Topic;

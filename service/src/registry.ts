@@ -28,6 +28,9 @@ export interface Registry {
    * notion of placement, i.e. one cell that holds everything.
    */
   heldHere?(orgId: string, appId: string): Promise<boolean>;
+  /** The cell that holds the app, and a way to re-read it (relay.ts). */
+  holderOf?(orgId: string, appId: string): Promise<string>;
+  reloadPlacement?(): void;
 }
 
 interface FileEntry {

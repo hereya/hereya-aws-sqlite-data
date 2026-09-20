@@ -50,6 +50,7 @@ export class CloudMapRegistration {
   private readonly port: number;
   private readonly cellId: string;
   private instanceId: string | null = null;
+  private ip: string | null = null;
 
   constructor(opts: {
     serviceId: string;
@@ -85,19 +86,38 @@ export class CloudMapRegistration {
       }
     }
 
+    this.instanceId = instanceId;
+    this.ip = ip;
+    await this.registerSelf();
+  }
+
+  /** Who registered, for the `_vms` row (vms.ts). Null before `register()`. */
+  get registered(): { instanceId: string; ip: string; port: number; cellId: string } | null {
+    if (!this.instanceId || !this.ip) return null;
+    return { instanceId: this.instanceId, ip: this.ip, port: this.port, cellId: this.cellId };
+  }
+
+  /** Register WITHOUT clearing anything — also how an instance a peer wrongly evicted comes back. */
+  async registerSelf(): Promise<void> {
+    if (!this.instanceId || !this.ip) return;
     await this.client.send(
       new RegisterInstanceCommand({
         ServiceId: this.serviceId,
-        InstanceId: instanceId,
+        InstanceId: this.instanceId,
         Attributes: {
-          AWS_INSTANCE_IPV4: ip,
+          AWS_INSTANCE_IPV4: this.ip,
           AWS_INSTANCE_PORT: String(this.port),
           [CELL_ATTRIBUTE]: this.cellId,
         },
       }),
     );
-    this.instanceId = instanceId;
-    log({ event: "registered", instanceId, ip, port: this.port });
+    log({ event: "registered", instanceId: this.instanceId, ip: this.ip, port: this.port });
+  }
+
+  /** A peer that died without deregistering (peer-watch.ts). */
+  async deregisterPeer(instanceId: string): Promise<void> {
+    await this.client.send(new DeregisterInstanceCommand({ ServiceId: this.serviceId, InstanceId: instanceId }));
+    log({ event: "deregistered-dead-peer", instanceId });
   }
 
   /** Drain: pull this instance out of discovery before the API stops answering. */

@@ -263,6 +263,83 @@ Deliberately NOT here, moved to phase 3 where two real cells can test them: per-
 record keys, per-cell heartbeat/metric dimensions and alarms, the `_vms` partition and its grant.
 With one cell each of them would be code no test and no trial could exercise.
 
+## N cells, one gateway: the VM→VM relay (2026-09-20, `t_dbmove_p3_relay_cells`)
+
+Phase 3. `vmCount` (default **1** = the stack exactly as it was) adds cells. A cell owns what the
+single-writer invariant is scoped by — its ASG, its launch hook, its `CELL_ID`, its four alarms —
+and SHARES everything a client can see: one gateway, one Cloud Map service, one SG, one role, one
+table, one bucket. **The 5 Data API clients, the app Lambdas' IAM and env do not change.**
+
+- **The relay** (`service/src/relay.ts`, `server/relay-out.ts`). The gateway knows nothing about
+  apps, so a request lands on any cell. The gate's `MISPLACED` is caught in `build.ts` and the
+  request is forwarded — method, path, body, capability header — to the holder on the private
+  network; the answer goes back **verbatim**. The capability gate runs BEFORE, on both cells.
+  Two rules carry the safety:
+  1. **A relayed request is never relayed again** (`x-dilaya-relayed`). A cell that does not hold
+     it answers 421 to the peer. Diverging caches cost one hop, never a loop. Before answering 421
+     to a peer a cell RE-READS placement, so that a 421 between VMs always means "as of now" — the
+     relaying cell then re-reads its own and tries once more.
+  2. **What the client is told must be true of what ran**, because its retry policy acts on it
+     (`dilaya-connector/src/dataapi-retry.ts` replays a write on 503). `UNAVAILABLE` (503) only
+     when the TCP connection was **never established** — judged from the socket's `connect`
+     event, not from an error-code list: a dead instance sends no RST, it just never answers
+     the SYN (2 s connect timeout). Anything after the connect may have run → `INTERNAL` (500
+     with a code), which no client replays.
+- **`_vms`** (`vms.ts`): `sk = <cellId>/<instanceId>` → `{ip, port, state, beat, atMs}`, written
+  by each instance when it enters Cloud Map, `retired` at drain step 0. Grant: `PutItem` +
+  `DeleteItem` conditioned on `LeadingKeys = _vms`. **The announcement is never fatal**: with one
+  cell nobody reads the row, and aborting a boot over it would be a total outage.
+- **Peer watch** (`peer-watch.ts`, 20 s). A crashed instance never deregisters, and with N cells
+  1/N of ALL traffic would hit its address until its replacement boots. A peer evicts it from
+  Cloud Map once its `beat` counter has stood still for 3 of the WATCHER's own ticks — **no clock
+  of another machine is read**, and a tick the watcher could not read counts for nothing. A wrong
+  eviction heals itself: the victim finds `evicted` on its row and registers again; meanwhile it
+  stayed reachable through the relay.
+- **Placing a NEW org**: an ORG row `_placement / sk=<orgId>` → `vmId`. Resolution: the app's
+  row, else its org's, else the origin. Read-only for the VMs (the write grant on `_placement`
+  comes with phase 4). ⚠️ **Only for an org with no database yet**: a row says where the file IS,
+  it moves nothing. `/admin/delete-app` and `/stats` follow placement too (`assertHeldHere` — the
+  delete route has no `authorize()`, and "deleted" from a cell that never had the file would
+  leave the real one behind).
+- **Per cell, with the origin unchanged**: handover keys (`handover/keys.ts`: `current#1`…; the
+  origin keeps the bare keys — the roll that ships this has an old instance on one side) and
+  metric dimensions (`metric-dimensions.ts`: `{stack, cell}`; the origin keeps `{stack}`, because a
+  new dimension set is a NEW metric and would orphan every alarm for the length of a roll).
+- ⚠️ **Lowering `vmCount` destroys the cells above it.** Their data survives in S3 but nothing
+  re-places it: empty a cell before removing it (phase 4/5 tooling).
+- **`/admin/sync` is BROADCAST to every cell** (`Relay.broadcast`, never re-broadcast; the answer
+  carries `cells: [{cellId, instanceId, status}]`). The first draft said "reaches one cell,
+  harmless" — the trial proved it wrong, see below. The rule for an operator: **placement row →
+  `/admin/sync` → only then the org's first database.** Without the sync, a cell keeps its
+  placement cache for `REGISTRY_CACHE_MS` (30 s) and still believes it is the holder.
+
+**Tried for real** (trial stack `dilayadev-cells-trial`, `vmCount=2`, handover on, 100 seeded apps
+on the origin + 10 in an org placed on cell 1, destroyed the same hour —
+`scripts/acceptance/cells-trial.mjs <stack> kill`, 15/15):
+
+- The joints hold: one Cloud Map registration per cell, both `_vms` rows written with the role as
+  it is, the SG lets one VM reach the other, and **the gateway does spread over both
+  registrations** — the relay ran both ways (509 / 305 requests), none crossed twice. 400 reads
+  over both orgs all correct, client-side p50 112 ms / p95 153 ms (SigV4 + gateway included, about half of them relayed;
+  no one-cell baseline was taken in the same run, so the hop's cost is NOT isolated here).
+- **The defect no test could see.** First run: org row written, `/admin/sync`, 10 apps created —
+  2 of the 10 answered `no such table`. The sync had reached ONE cell; the other still believed
+  "no row = mine", so it CREATED the database at home, and the next statement landed on the real
+  holder. Silent-loss shaped (an acknowledged `CREATE TABLE` on a file the reconcile then
+  deletes). Hence the broadcast; re-run on a FRESH org: 10/10 born on cell 1, none on cell 0.
+- **A crash, not a terminate.** `ec2 terminate-instances` is a clean shutdown: the service drains,
+  deregisters and retires its row — the origin's org saw 3 errors in 10 s and nobody had anything
+  to evict. With an immediate power-off (sysrq `o`): **cell 0 evicted its dead peer after 44 s**;
+  until then the ORIGIN's org — whose cell was perfectly healthy — lost 8 of its ~44 one-per-second probes (the
+  gateway kept sending 1/N to the dead address), and none after. Cell 1 was back on a new
+  instance, restored from S3 with its data, **83 s** after the crash, and cleared its cell's
+  leftovers from `_vms` (2 rows, not 3).
+- **A roll of ANY cell is felt by EVERY org.** Both cells rolled one after the other (handover
+  on): each org saw scattered 4–8 s gaps during BOTH rolls (~16–23 s of failed probe-seconds
+  in a 40 s window, against 19 s for one cell alone) — the gateway's target cache again, now
+  paid once per cell. The connector's retry covers it as before, but N cells do not make a roll
+  cheaper for anyone; that is phase 5's job (drain a cell instead of rolling it).
+
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 
 Every section below that says "bounce" describes what a config change USED to cost: the config

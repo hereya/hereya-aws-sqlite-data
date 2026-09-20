@@ -60,7 +60,9 @@ if (serviceId) {
 await ddb.send(new PutItemCommand({ TableName: outputs.registryTableName, Item: { ...key, vmId: { S: "1" }, version: { N: "1" } } }));
 console.log("sync after placing elsewhere:", JSON.stringify(await sync()));
 const away = await seedOf(MOVED);
-check("placed on cell 1: this cell answers 421 MISPLACED", away.status === 421 && away.code === "MISPLACED", JSON.stringify(away));
+// Since the relay (t_dbmove_p3_relay_cells) the 421 stays between VMs: with no cell 1
+// in this stack the client is told 503 "no reachable instance", which it retries.
+check("placed on cell 1, which does not exist here: 503 UNAVAILABLE, and the app is let go", away.status === 503 && away.code === "UNAVAILABLE", JSON.stringify(away));
 const bystander = await seedOf(BYSTANDER);
 check("the bystander never noticed", bystander.status === 200 && bystander.value === BYSTANDER, JSON.stringify(bystander));
 

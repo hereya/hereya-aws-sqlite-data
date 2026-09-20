@@ -57,3 +57,12 @@ export function send(res: ServerResponse, status: number, body: unknown): void {
   });
   res.end(payload);
 }
+
+/** A peer's answer, handed back byte for byte (relay-out.ts). */
+export function sendRaw(res: ServerResponse, status: number, payload: string): void {
+  res.writeHead(status, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(payload),
+  });
+  res.end(payload);
+}

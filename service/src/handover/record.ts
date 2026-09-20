@@ -24,6 +24,7 @@ import {
   PutItemCommand,
   type DynamoDBClient,
 } from "@aws-sdk/client-dynamodb";
+import { cellKey } from "./keys.ts";
 
 /** The fixed partition. Org ids are UUIDs, so this literal cannot collide. */
 export const HANDOVER_PARTITION = "_handover";
@@ -98,7 +99,7 @@ function parseHandover(item: Item): HandoverRecord | null {
  *  cleanly — the replacement then falls back to its timeout, which is the
  *  conservative path (see awaitHandover). */
 export async function putHandover(
-  deps: { client: DynamoDBClient; tableName: string },
+  deps: { client: DynamoDBClient; tableName: string; cellId?: string },
   record: HandoverRecord,
 ): Promise<boolean> {
   try {
@@ -107,7 +108,7 @@ export async function putHandover(
         TableName: deps.tableName,
         Item: {
           org_id: { S: HANDOVER_PARTITION },
-          sk: { S: HANDOVER_KEY },
+          sk: { S: cellKey(HANDOVER_KEY, deps.cellId) },
           seq: { N: String(record.seq) },
           fromInstanceId: { S: record.fromInstanceId },
           atMs: { N: String(record.atMs) },
@@ -131,13 +132,13 @@ export async function putHandover(
  * proof as a reason to wait, never as permission to start.
  */
 export async function getHandover(
-  deps: { client: DynamoDBClient; tableName: string },
+  deps: { client: DynamoDBClient; tableName: string; cellId?: string },
 ): Promise<HandoverRecord | null> {
   try {
     const res = await deps.client.send(
       new GetItemCommand({
         TableName: deps.tableName,
-        Key: { org_id: { S: HANDOVER_PARTITION }, sk: { S: HANDOVER_KEY } },
+        Key: { org_id: { S: HANDOVER_PARTITION }, sk: { S: cellKey(HANDOVER_KEY, deps.cellId) } },
         // Eventually-consistent here would let the replacement miss the very
         // record it is waiting for and time out on a handover that happened.
         ConsistentRead: true,
@@ -153,7 +154,7 @@ export async function getHandover(
 /** The replacement says it has begun warming, so the departing instance can
  *  date the window whose writes it must report. Best-effort by design. */
 export async function putWarming(
-  deps: { client: DynamoDBClient; tableName: string },
+  deps: { client: DynamoDBClient; tableName: string; cellId?: string },
   record: WarmingRecord,
 ): Promise<boolean> {
   try {
@@ -162,7 +163,7 @@ export async function putWarming(
         TableName: deps.tableName,
         Item: {
           org_id: { S: HANDOVER_PARTITION },
-          sk: { S: WARMING_KEY },
+          sk: { S: cellKey(WARMING_KEY, deps.cellId) },
           instanceId: { S: record.instanceId },
           atMs: { N: String(record.atMs) },
         },
@@ -176,13 +177,13 @@ export async function putWarming(
 }
 
 export async function getWarming(
-  deps: { client: DynamoDBClient; tableName: string },
+  deps: { client: DynamoDBClient; tableName: string; cellId?: string },
 ): Promise<WarmingRecord | null> {
   try {
     const res = await deps.client.send(
       new GetItemCommand({
         TableName: deps.tableName,
-        Key: { org_id: { S: HANDOVER_PARTITION }, sk: { S: WARMING_KEY } },
+        Key: { org_id: { S: HANDOVER_PARTITION }, sk: { S: cellKey(WARMING_KEY, deps.cellId) } },
         ConsistentRead: true,
       }),
     );

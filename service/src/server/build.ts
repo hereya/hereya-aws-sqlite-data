@@ -4,12 +4,14 @@ import { validateTx } from "../validate.ts";
 import type { ServerDeps } from "./deps.ts";
 import { createGate } from "./gate.ts";
 import { createHandlers } from "./handlers.ts";
-import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, readBody, send } from "./http.ts";
+import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, readBody, send, sendRaw } from "./http.ts";
+import { createRelayOut, isRelayed } from "./relay-out.ts";
 
 export function buildServer(deps: ServerDeps): Server {
   const { cfg, registry, manager, txRegistry } = deps;
   const startedAt = Date.now();
-  const { enforceCapability, authorize } = createGate(deps);
+  const { enforceCapability, authorize, assertHeldHere } = createGate(deps);
+  const relayOut = createRelayOut(deps);
   const { handleQuery, handleBatchExecute, handleTxBegin, handleTxEnd, handleStats } = createHandlers(
     deps,
     authorize,
@@ -19,6 +21,16 @@ export function buildServer(deps: ServerDeps): Server {
     void route(req, res);
   });
 
+  /**
+   * A peer relayed this because ITS placement says we hold the app. If ours
+   * disagrees, one of the two is stale — re-read before answering 421, so that
+   * a 421 sent to a peer always means "as of now".
+   */
+  async function freshenIfRelayed(req: IncomingMessage, orgId?: string, appId?: string): Promise<void> {
+    if (!isRelayed(req) || !registry.heldHere || typeof orgId !== "string" || typeof appId !== "string") return;
+    if (!(await registry.heldHere(orgId, appId))) registry.reloadPlacement?.();
+  }
+
   async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const started = Date.now();
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -27,6 +39,7 @@ export function buildServer(deps: ServerDeps): Server {
     const capHeader = Array.isArray(rawCap) ? rawCap[0] : rawCap;
     let orgId: string | undefined;
     let appId: string | undefined;
+    let body: unknown;
     try {
       if (route === "GET /health") {
         send(res, 200, {
@@ -45,6 +58,7 @@ export function buildServer(deps: ServerDeps): Server {
         orgId = url.searchParams.get("org_id") ?? undefined;
         appId = url.searchParams.get("app_id") ?? undefined;
         enforceCapability(capHeader, route, orgId, appId);
+        await freshenIfRelayed(req, orgId, appId);
         const stats = await handleStats(url);
         audit({ ts: new Date().toISOString(), route, orgId, appId, allowed: true, ms: Date.now() - started });
         send(res, 200, stats);
@@ -53,7 +67,7 @@ export function buildServer(deps: ServerDeps): Server {
       if (req.method !== "POST") {
         throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
       }
-      const body = await readBody(req, cfg.maxRequestBytes);
+      body = await readBody(req, cfg.maxRequestBytes);
       if (typeof body === "object" && body !== null) {
         orgId = (body as Record<string, unknown>).org_id as string | undefined;
         appId = (body as Record<string, unknown>).app_id as string | undefined;
@@ -63,6 +77,7 @@ export function buildServer(deps: ServerDeps): Server {
       if (CAPABILITY_GATED_POST.has(url.pathname)) {
         enforceCapability(capHeader, route, orgId, appId);
       }
+      await freshenIfRelayed(req, orgId, appId);
       let payload: unknown;
       switch (url.pathname) {
         case "/query":
@@ -87,6 +102,12 @@ export function buildServer(deps: ServerDeps): Server {
             await registry.reload();
             payload = { status: "reloaded" };
           }
+          // No pair, so no holder: EVERY cell must drop its caches, or the
+          // one that was not asked keeps believing a placement that changed.
+          if (deps.relay && !isRelayed(req)) {
+            const cells = await deps.relay.broadcast({ method: "POST", path: "/admin/sync", body: "{}" });
+            payload = { ...(payload as object), cells };
+          }
           break;
         case "/admin/delete-app": {
           // Deliberately NO active-status check: the connector flips the
@@ -94,6 +115,10 @@ export function buildServer(deps: ServerDeps): Server {
           // guarantees the caller is the legitimate connector.
           const q = validateTx(body, false);
           if (!deps.onDeleteApp) throw new ServiceError("BAD_REQUEST", "delete-app is not available");
+          // No authorize() on this route, so placement is checked here: the
+          // file to remove is on the holder, and "deleted" from a cell that
+          // never had it would leave the real one behind.
+          await assertHeldHere(q.orgId, q.appId);
           await deps.onDeleteApp(q.orgId, q.appId);
           orgId = q.orgId;
           appId = q.appId;
@@ -106,7 +131,21 @@ export function buildServer(deps: ServerDeps): Server {
       audit({ ts: new Date().toISOString(), route, orgId, appId, allowed: true, ms: Date.now() - started });
       send(res, 200, payload);
     } catch (err) {
-      const svcErr = toServiceError(err);
+      let svcErr = toServiceError(err);
+      if (svcErr.code === "MISPLACED" && orgId !== undefined && appId !== undefined) {
+        // Held by another cell: hand the request over, and the answer back.
+        try {
+          const relayed = await relayOut(req, { orgId, appId, capHeader, body });
+          if (relayed !== null) {
+            audit({ ts: new Date().toISOString(), route, orgId, appId, allowed: relayed.status < 400, code: `RELAYED_${relayed.toCell}`, ms: Date.now() - started });
+            sendRaw(res, relayed.status, relayed.body);
+            return;
+          }
+        } catch (relayErr) {
+          err = relayErr;
+          svcErr = toServiceError(relayErr);
+        }
+      }
       if (svcErr.code === "INTERNAL") {
         console.error(JSON.stringify({ type: "error", route, message: svcErr.message, stack: (err as Error)?.stack }));
       }

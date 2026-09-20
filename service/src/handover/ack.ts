@@ -22,6 +22,7 @@
 // leaves its registration behind (`register()` clears stale entries for that
 // reason), so it would read "alive" precisely on the crash path.
 import { GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { cellKey } from "./keys.ts";
 import type { HandoverDeps } from "./protocol.ts";
 import { getWarming, HANDOVER_PARTITION } from "./record.ts";
 
@@ -51,7 +52,7 @@ export async function acknowledgeWarming(
         TableName: deps.tableName,
         Item: {
           org_id: { S: HANDOVER_PARTITION },
-          sk: { S: ACK_KEY },
+          sk: { S: cellKey(ACK_KEY, deps.cellId) },
           fromInstanceId: { S: opts.selfInstanceId },
           forInstanceId: { S: warming.instanceId },
         },
@@ -69,7 +70,7 @@ async function readAckFor(deps: HandoverDeps, selfInstanceId: string): Promise<s
     const res = await deps.client.send(
       new GetItemCommand({
         TableName: deps.tableName,
-        Key: { org_id: { S: HANDOVER_PARTITION }, sk: { S: ACK_KEY } },
+        Key: { org_id: { S: HANDOVER_PARTITION }, sk: { S: cellKey(ACK_KEY, deps.cellId) } },
         ConsistentRead: true,
       }),
     );

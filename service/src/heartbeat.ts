@@ -3,6 +3,7 @@
 // instance dead, service wedged, replication down, network cut — trips the
 // missing-data alarm, which relays to Telegram. « Le silence est interdit. »
 import { CloudWatchClient, PutMetricDataCommand, type MetricDatum } from "@aws-sdk/client-cloudwatch";
+import { metricDimensions } from "./metric-dimensions.ts";
 import type { Config } from "./config.ts";
 import { sampleCapacity } from "./capacity.ts";
 
@@ -70,7 +71,7 @@ export class Heartbeat {
    */
   private capacityData(): MetricDatum[] {
     if (this.capacity === null) return [];
-    const dimensions = [{ Name: "stack", Value: this.cfg.heartbeatDimension }];
+    const dimensions = metricDimensions(this.cfg);
     const data: MetricDatum[] = [];
     const sample = sampleCapacity(
       this.capacity.litestreamPid(),
@@ -138,7 +139,7 @@ export class Heartbeat {
       if (healthy) {
         metricData.push({
           MetricName: METRIC_NAME,
-          Dimensions: [{ Name: "stack", Value: this.cfg.heartbeatDimension }],
+          Dimensions: metricDimensions(this.cfg),
           Value: 1,
         });
       }

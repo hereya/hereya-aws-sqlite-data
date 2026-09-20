@@ -8,6 +8,7 @@ import type { AppSync } from "./sync.ts";
 import type { CloudMapRegistration } from "./cloudmap.ts";
 import type { Litestream } from "./litestream.ts";
 import type { TxRegistry } from "./tx.ts";
+import type { PeerWatch } from "./peer-watch.ts";
 import type { WarmingWatcher } from "./handover/watcher.ts";
 import type { WriteStats } from "./write-stats.ts";
 import { dirtySince } from "./handover/dirty.ts";
@@ -27,6 +28,7 @@ export class Shutdown {
   private readonly litestream: Litestream;
   private readonly txRegistry: TxRegistry;
   private readonly cloudMap: CloudMapRegistration | null;
+  private readonly peerWatch: PeerWatch | null;
   private readonly watcher: WarmingWatcher | null;
   /** Null when the handover is off — every call site then short-circuits. */
   private readonly handover: (HandoverDeps & { instanceId: string }) | null;
@@ -42,6 +44,7 @@ export class Shutdown {
     litestream: Litestream;
     txRegistry: TxRegistry;
     cloudMap?: CloudMapRegistration | null;
+    peerWatch?: PeerWatch | null;
     watcher?: WarmingWatcher | null;
     handover?: (HandoverDeps & { instanceId: string }) | null;
     writeStats?: WriteStats | null;
@@ -53,6 +56,7 @@ export class Shutdown {
     this.litestream = opts.litestream;
     this.txRegistry = opts.txRegistry;
     this.cloudMap = opts.cloudMap ?? null;
+    this.peerWatch = opts.peerWatch ?? null;
     this.watcher = opts.watcher ?? null;
     this.handover = opts.handover ?? null;
     this.writeStats = opts.writeStats ?? null;
@@ -122,7 +126,9 @@ export class Shutdown {
     if (this.spotTimer) clearInterval(this.spotTimer);
 
     // 0. Leave service discovery first so API Gateway stops routing to us.
+    // …and the peers' directory, so that they stop relaying to us as well.
     if (this.cloudMap) await this.cloudMap.deregister();
+    await this.peerWatch?.retire();
 
     // 1. Roll back whatever transactions are open (their callers get TX_NOT_FOUND).
     for (const app of this.sync.servedApps) {
