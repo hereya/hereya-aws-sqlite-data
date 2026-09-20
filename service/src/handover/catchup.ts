@@ -20,6 +20,14 @@
 // Take any one of those away and this becomes data loss, which is why the
 // caller may only reach it through a proven handover — never on a timeout.
 //
+// ⚠️ THE THIRD ONE IS NOW CHECKED, NOT ASSUMED (t_handover_stale_ack_wipe). It
+// was false on a PROCESS restart: same instance, same disk, files carrying
+// acknowledged writes — and a stale ack (ack.ts) led the gate here with "re-
+// restore everything". A file that was already on the disk when this boot
+// began (`predatesBoot`) is never deleted, whatever the gate concluded: a
+// replacement instance starts from an empty disk, so on a real handover the
+// guard skips nothing.
+//
 // WHAT IT DELETES. The database, its WAL and SHM sidecars, and litestream's
 // local staging directory. The staging directory matters: it holds the
 // generation state for the copy we are throwing away, and leaving it next to a
@@ -51,6 +59,9 @@ export interface CatchUpDeps {
   /** The apps this instance actually serves — anything else is not ours to
    *  restore, and a key naming one is ignored rather than acted on. */
   serves: (orgId: string, appId: string) => boolean;
+  /** The local file was ALREADY there when this boot began (boot-restore said
+   *  `existing`): it may hold writes no replica has. Absent = never (tests). */
+  predatesBoot?: (orgId: string, appId: string) => boolean;
   /**
    * How many apps are re-restored at once. Measured on prod 2026-09-19: 100
    * apps caught up ONE AT A TIME took 105 s of a 227 s cut, where the boot
@@ -97,6 +108,10 @@ async function catchUpOne(deps: CatchUpDeps, key: string): Promise<boolean> {
   const { orgId, appId } = pair;
   if (!deps.serves(orgId, appId)) {
     log({ event: "catchup-skipped", key, reason: "not-served-here" });
+    return false;
+  }
+  if (deps.predatesBoot?.(orgId, appId)) {
+    console.error(JSON.stringify({ type: "handover", event: "catchup-refused", key, reason: "local-file-predates-boot" }));
     return false;
   }
   const dbPath = deps.manager.dbPath(orgId, appId);

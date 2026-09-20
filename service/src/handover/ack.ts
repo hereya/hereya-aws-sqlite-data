@@ -18,6 +18,19 @@
 // ITSELF: the item is reused by every roll, so an ack left by a previous one
 // names another instance and reads as "no ack".
 //
+// ⚠️ …and addressed to THIS BOOT (t_handover_stale_ack_wipe). The item outlives
+// the roll that wrote it, and the instance it names is the one that goes on
+// serving. When that instance's PROCESS restarted — a crash, an OOM, a
+// `systemctl restart` — it found the ack of its own first boot, took its dead
+// predecessor for a live one, saw the ASG list nobody, concluded "gone without
+// a report", and re-restored EVERYTHING it held: every local database deleted
+// under live traffic (a crash never leaves Cloud Map), acknowledged writes
+// with them. So an ack also echoes the `atMs` of the announcement it answers
+// — a value only the announcing boot knows, compared for EQUALITY, never as a
+// time. An ack from a predecessor that predates this (the roll that ships it)
+// carries none and reads as "no ack": the ASG listing covers that roll, as it
+// covered the roll that first switched the protocol on.
+//
 // Cloud Map was considered as the liveness signal and rejected: a hard crash
 // leaves its registration behind (`register()` clears stale entries for that
 // reason), so it would read "alive" precisely on the crash path.
@@ -45,7 +58,8 @@ export async function acknowledgeWarming(
 ): Promise<string | null> {
   const warming = await getWarming(deps);
   if (warming === null || warming.instanceId === opts.selfInstanceId) return null;
-  if (warming.instanceId === opts.alreadyAcked) return warming.instanceId;
+  const token = `${warming.instanceId}@${warming.atMs}`;
+  if (token === opts.alreadyAcked) return token;
   try {
     await deps.client.send(
       new PutItemCommand({
@@ -55,17 +69,18 @@ export async function acknowledgeWarming(
           sk: { S: cellKey(ACK_KEY, deps.cellId) },
           fromInstanceId: { S: opts.selfInstanceId },
           forInstanceId: { S: warming.instanceId },
+          forAtMs: { N: String(warming.atMs) },
         },
       }),
     );
-    return warming.instanceId;
+    return token;
   } catch (err) {
     console.error(JSON.stringify({ type: "handover", event: "ack-failed", message: (err as Error).message }));
     return null;
   }
 }
 
-async function readAckFor(deps: HandoverDeps, selfInstanceId: string): Promise<string | null> {
+async function readAckFor(deps: HandoverDeps, selfInstanceId: string, announceId: number): Promise<string | null> {
   try {
     const res = await deps.client.send(
       new GetItemCommand({
@@ -74,8 +89,10 @@ async function readAckFor(deps: HandoverDeps, selfInstanceId: string): Promise<s
         ConsistentRead: true,
       }),
     );
-    const item = res.Item as Record<string, { S?: string }> | undefined;
+    const item = res.Item as Record<string, { S?: string; N?: string }> | undefined;
     if (item?.forInstanceId?.S !== selfInstanceId) return null;
+    // Ours, but for which boot? See the header: a previous life's ack is not proof of life.
+    if (item.forAtMs?.N === undefined || Number(item.forAtMs.N) !== announceId) return null;
     return item.fromInstanceId?.S ?? null;
   } catch {
     // Unreadable = no proof of life. The caller then takes the short wait,
@@ -94,12 +111,12 @@ async function readAckFor(deps: HandoverDeps, selfInstanceId: string): Promise<s
  */
 export async function awaitAck(
   deps: HandoverDeps,
-  opts: { selfInstanceId: string; deadlineMs: number },
+  opts: { selfInstanceId: string; announceId: number; deadlineMs: number },
 ): Promise<string | null> {
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   for (;;) {
-    const from = await readAckFor(deps, opts.selfInstanceId);
+    const from = await readAckFor(deps, opts.selfInstanceId, opts.announceId);
     if (from !== null) {
       log({ event: "predecessor-alive", from });
       return from;

@@ -35,6 +35,8 @@ export interface GateDeps extends HandoverDeps {
   /** When `announceWarming` ran, on THIS machine's clock — the ack deadline is
    *  counted from it, so the restore absorbs the wait instead of adding to it. */
   announcedAtMs: number;
+  /** The `atMs` this boot wrote in its announcement — an ack must echo it (ack.ts). */
+  announceId: number;
   /**
    * Release the ASG launch hook (lifecycle.ts). Called once we are warm and
    * BEFORE waiting for the report — it is what gets the predecessor its
@@ -67,6 +69,7 @@ export interface GateDeps extends HandoverDeps {
 export async function runHandoverGate(cfg: Config, deps: GateDeps): Promise<void> {
   const acked = await awaitAck(deps, {
     selfInstanceId: deps.instanceId,
+    announceId: deps.announceId,
     deadlineMs: deps.announcedAtMs + cfg.handoverAckMs,
   });
   const peersAtStart = await deps.peers();

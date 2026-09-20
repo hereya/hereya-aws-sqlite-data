@@ -72,7 +72,7 @@ export type HandoverOutcome =
  */
 export async function announceWarming(
   deps: HandoverDeps,
-  opts: { instanceId: string },
+  opts: { instanceId: string; atMs?: number },
 ): Promise<HandoverRecord | null> {
   const now = deps.now ?? (() => Date.now());
   // ORDER IS LOAD-BEARING: read the baseline BEFORE announcing. Announcing
@@ -84,7 +84,8 @@ export async function announceWarming(
   // reports `dirtyUnknown`, so the replacement re-restores everything. Slow,
   // never wrong.
   const baseline = await getHandover(deps);
-  await putWarming(deps, { instanceId: opts.instanceId, atMs: now() });
+  // `atMs` doubles as this boot's identity: the ack echoes it (ack.ts).
+  await putWarming(deps, { instanceId: opts.instanceId, atMs: opts.atMs ?? now() });
   log({ event: "warming-announced", baselineSeq: baseline?.seq ?? 0 });
   return baseline;
 }

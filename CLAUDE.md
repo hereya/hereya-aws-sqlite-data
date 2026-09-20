@@ -210,6 +210,54 @@ apps.** `test/shutdown-drain-scale.test.ts` and the concurrency test in
 `test/handover-catchup.test.ts` pin both; each was verified to fail first. And a trial stack
 that does not carry prod's app count measures nothing — seed it (`handover-scale.mjs seed`).
 
+## A process RESTART is not a handover (2026-09-20, `t_handover_stale_ack_wipe`)
+
+Found by the crash trial of `t_dbmove_p4_move` — live in prod since the handover was switched on
+(19/09), and nothing to do with moving databases.
+
+**What happened.** The `_handover/ack` item outlives the roll that wrote it, and names the instance
+that goes on serving (`forInstanceId`). When that instance's PROCESS restarted — SIGKILL, OOM,
+`systemctl restart`, the SSM emergency path — the boot read the ack of its own first boot:
+`predecessor-alive` (a dead instance) → the ASG lists nobody → `predecessor-gone` →
+`catchup-start unknown:true` → **every local database deleted and re-restored from S3**. The
+catch-up is only safe when "this instance never wrote to these files"; on a restart the disk holds
+acknowledged writes no replica has yet. And a crash never leaves Cloud Map, so requests kept
+arriving WHILE the files were deleted: a worker re-created an EMPTY file (`SQL_ERROR no such
+table`), the restore then failed on it (`output path already exists` → `catchup-failed`), and the
+app served an empty database that litestream started replicating. On the trial: 13 acknowledged
+writes lost on one app, the service restarting twice. Read-only check on prod the same evening:
+its ack named the serving instance.
+
+**Three guards, each with a test verified to fail first:**
+
+1. **The instance remembers that it WAS the writer** (`handover/writer-marker.ts`): a marker on
+   the database disk — whose lifetime is exactly the instance's — written once replication has
+   started, removed on a clean shutdown AFTER `litestream.stop()` and BEFORE the handover report
+   (no removal ⇒ no report). A boot that finds it is nobody's replacement: it announces nothing,
+   skips the gate (`gate-skipped`) and starts replicating at once. Nothing in DynamoDB can tell
+   a restarted writer from a warming replacement — same instance id, records that outlive the
+   process — which is why this is on the disk.
+   ⚠️ NOT "the files pre-existed": a REPLACEMENT whose process crashed while warming also finds
+   its files, and those ARE stale reads — it must go through the gate and the catch-up.
+2. **An ack is addressed to a BOOT, not just an instance** (`ack.ts`): it echoes the `atMs` of the
+   announcement it answers, compared for equality (never as a time). An ack from a predecessor
+   that predates this carries none and reads as "no ack" — the ASG listing covers that roll.
+3. **`catchUp` refuses a file that was on the disk when this boot began** (`predatesBoot`,
+   from the boot restore's `existing`), whatever the gate concluded: the safety condition of
+   that file, checked instead of assumed.
+
+**Tried for real** (`dilayadev-move-trial`, handover ON, 100 seeded apps,
+`scripts/acceptance/restart-under-write.mjs`): production's ack item planted verbatim for the
+serving instance, three apps written every 100 ms, `kill -9` of the process. Before the fix
+(same stack, same evening): `catchup-start apps:20 unknown:true`, `SQL_ERROR`, `catchup-failed`,
+acknowledged rows gone. After: **363 acknowledged writes, 0 lost**, journal `gate-skipped` and no
+`catchup-start`, API back 5.6 s after the kill.
+
+**Known and left as is:** a restarted process that is NOT a marked writer (a replacement that
+crashed while warming, or a clean `systemctl restart`, which releases the marker) still serves
+without replication for the ack wait + the short wait (~25 s) — the stale Cloud Map registration
+routes to it. Those writes are on the local disk and litestream ships them when it starts.
+
 ## Placement: a CELL holds an app, not "the VM" (2026-09-20, `t_dbmove_p2_placement`)
 
 Phase 2 of the live-moves plan. **Nothing production can observe changes**: there is still one

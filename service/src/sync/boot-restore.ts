@@ -64,6 +64,7 @@ export async function bootRestoreAll(state: SyncState): Promise<LitestreamApp[]>
       }
       const key = appKeyOf(ref.orgId, ref.appId);
       state.served.set(key, app);
+      if (outcome === "existing") state.existingAtBoot.add(key);
       // "fresh" = no replica existed = never written. Leave it out of the
       // config; a request promotes it. Anything else HAS data and must be
       // replicated from the start.

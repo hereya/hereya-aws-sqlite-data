@@ -140,3 +140,14 @@ test("no restore is still running when the failure is rethrown", async () => {
 
   assert.equal(sawRunningAfterThrow, false, `${running} restores were still in flight after the throw`);
 });
+
+test("a file found ALREADY on the disk at boot is remembered — the handover catch-up must never delete it", async () => {
+  // t_handover_stale_ack_wipe: `existing` = a process restart on the same disk.
+  const outcomes: Record<string, "existing" | "restored" | "fresh"> = { a: "existing", b: "restored", c: "fresh" };
+  const ls = { restoreIfMissing: async (app: { appId: string }) => outcomes[app.appId]! } as never;
+  const registry = { listActive: async () => Object.keys(outcomes).map((appId) => ({ orgId: "org", appId })) } as never;
+  const manager = { dbPath: (o: string, a: string) => `/nope/${o}/${a}/app.db` } as never;
+  const sync = new AppSync(registry, manager, ls, 2);
+  await sync.bootRestoreAll();
+  assert.deepEqual(["a", "b", "c"].map((id) => sync.hadLocalFileAtBoot("org", id)), [true, false, false]);
+});

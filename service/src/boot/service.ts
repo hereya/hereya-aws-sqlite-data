@@ -27,6 +27,7 @@ import { readInstanceId } from "../handover/instance-id.ts";
 import { completeLaunchHook, createLifecycleClient } from "../handover/lifecycle.ts";
 import { listPeers } from "../handover/overlap.ts";
 import { WarmingWatcher } from "../handover/watcher.ts";
+import { markWriter, wasWriter } from "../handover/writer-marker.ts";
 import type { RunningService } from "./types.ts";
 import { seedWriteStats } from "./write-stats-boot.ts";
 
@@ -82,11 +83,14 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   let handoverForShutdown: { client: DynamoDBClient; tableName: string; instanceId: string; cellId: string } | null = null;
   let handoverBaseline: HandoverRecord | null = null;
   let announcedAtMs = 0;
+  const [announceId, resumed] = [Date.now(), wasWriter(cfg.dbDir)];
   const handoverClient = cfg.handoverEnabled ? createHandoverClient(cfg) : null;
   if (handoverClient !== null) {
     const instanceId = (await readInstanceId()) ?? "";
     handoverForShutdown = { client: handoverClient, tableName: cfg.registryTable, instanceId, cellId: cfg.cellId };
-    handoverBaseline = await announceWarming(handoverForShutdown, { instanceId });
+    // A restarted WRITER is nobody's replacement (handover/writer-marker.ts).
+    if (resumed) console.log(JSON.stringify({ type: "handover", event: "gate-skipped", reason: "this instance was the writer" }));
+    else handoverBaseline = await announceWarming(handoverForShutdown, { instanceId, atMs: announceId });
     announcedAtMs = Date.now();
   }
 
@@ -127,10 +131,11 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   if (handoverForShutdown !== null) {
     const handoverDeps = handoverForShutdown;
     const asgClient = cfg.imdsEnabled ? createLifecycleClient(cfg.awsRegion) : null;
-    await runHandoverGate(cfg, {
+    if (!resumed) await runHandoverGate(cfg, {
       ...handoverDeps,
       baseline: handoverBaseline,
       announcedAtMs,
+      announceId,
       completeLaunch: async () => (asgClient ? completeLaunchHook({ client: asgClient }, handoverDeps.instanceId) : false),
       peers: async () => (asgClient ? listPeers({ client: asgClient }, handoverDeps.instanceId) : null),
       servedKeys: () => sync.servedApps.map((a) => appKeyOf(a.orgId, a.appId)),
@@ -138,6 +143,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
         manager,
         litestream,
         serves: (orgId, appId) => sync.isServed(orgId, appId),
+        predatesBoot: (orgId, appId) => sync.hadLocalFileAtBoot(orgId, appId),
         concurrency: cfg.bootRestoreConcurrency,
       },
     });
@@ -153,6 +159,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   // 5. continuous replication
   litestream.start(servedAtBoot);
+  markWriter(cfg.dbDir);
   bootTimer.mark("litestream");
 
   // 6. announce ourselves to the API Gateway path (Cloud Map) and to the other

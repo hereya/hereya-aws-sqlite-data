@@ -56,6 +56,11 @@ export class AppSync {
     return this.state.unusedCount;
   }
 
+  /** The local file predates this boot (a process restart). See handover/catchup.ts. */
+  hadLocalFileAtBoot(orgId: string, appId: string): boolean {
+    return this.state.existingAtBoot.has(`${orgId}/${appId}`);
+  }
+
   isServed(orgId: string, appId: string): boolean {
     return this.state.isServed(orgId, appId);
   }

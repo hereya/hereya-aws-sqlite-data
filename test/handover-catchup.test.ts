@@ -11,7 +11,7 @@
 //   4. One app that cannot be re-restored must not take the boot down with it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { catchUp, localArtifacts } from "../service/src/handover/catchup.ts";
@@ -95,6 +95,21 @@ test("an app this instance does not serve is skipped, not restored", async () =>
   assert.equal(existsSync(join(root, "org-a", "app-1", "app.db")), true, "its file must survive untouched");
 });
 
+test("a file that was ALREADY on the disk when this boot began is never deleted — whatever the gate concluded", async () => {
+  // t_handover_stale_ack_wipe: a process restart keeps its disk, and those
+  // files carry acknowledged writes no replica has yet. A replacement instance
+  // starts from an empty disk, so on a real handover this guard skips nothing.
+  const root = mkdtempSync(join(tmpdir(), "catchup-"));
+  seedApp(root, "org-a", "app-1");
+  seedApp(root, "org-a", "app-2");
+  const d = deps(root);
+  const before = readFileSync(join(root, "org-a", "app-1", "app.db"));
+  const done = await catchUp({ ...d.catchUpDeps, predatesBoot: (_o, appId) => appId === "app-1" }, ["org-a/app-1", "org-a/app-2"]);
+  assert.deepEqual(done, ["org-a/app-2"]);
+  assert.deepEqual(readFileSync(join(root, "org-a", "app-1", "app.db")), before, "not deleted, not re-restored");
+  assert.deepEqual(d.closed, ["org-a/app-2:before-unlink"], "and its worker is not even closed");
+});
+
 test("one app that cannot be re-restored does not stop the others", async () => {
   const root = mkdtempSync(join(tmpdir(), "catchup-"));
   seedApp(root, "org-a", "app-1");
@@ -118,6 +133,7 @@ test("a TIMEOUT never reaches the catch-up — nothing is deleted on an unproven
     instanceId: "i-new",
     baseline: null,
     announcedAtMs: 0,
+    announceId: 0,
     completeLaunch: async () => false,
     peers: async () => null,
     servedKeys: () => ["org-a/app-1"],
