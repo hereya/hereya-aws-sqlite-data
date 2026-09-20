@@ -22,27 +22,28 @@
 export const PINNED_AMI_REGION = "eu-west-1";
 
 /**
- * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20260917.1`,
- * published 2026-09-17, rolled 2026-09-18 (previous pin:
- * `ami-094d17305e4426f8b`, `al2023-ami-2023.12.20260909.0` — the roll of
- * 2026-09-12; before that `ami-07b0f29165b2646db` on 2026-09-01,
- * `ami-0c941aaee6f2de47e` on 2026-08-21 and `ami-053d8df569ac57bbb` on
- * 2026-08-05). To roll the OS: `npm run check:ami`, bump this constant to the
- * id it reports, publish the package, and roll it out through a connector
- * release. Rolling replaces the VM — ~60 s with no Data API — so it is a dated,
- * announced act, never a side effect.
+ * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20260918.0`,
+ * published 2026-09-18, rolled 2026-09-20 (previous pin:
+ * `ami-0535b4996339a5410`, `al2023-ami-2023.12.20260917.1` — the roll of
+ * 2026-09-18; before that `ami-094d17305e4426f8b` on 2026-09-12,
+ * `ami-07b0f29165b2646db` on 2026-09-01, `ami-0c941aaee6f2de47e` on 2026-08-21
+ * and `ami-053d8df569ac57bbb` on 2026-08-05). To roll the OS:
+ * `npm run check:ami`, bump this constant to the id it reports, publish the
+ * package, and roll it out through a connector release. Rolling replaces the
+ * VM — ~10 s with no Data API since the hot handover (measured 2026-09-19) — so
+ * it is a dated, announced act, never a side effect.
  *
  * ⚠️ Take the id from a FRESH `npm run check:ami`, never from a report written
  * earlier the same day: Amazon republished between the 07h and the 15h sweep of
  * 2026-09-18, and the morning's id (`ami-024d0517c23aa48af`) was already stale
  * by the evening.
  *
- * This roll answers the probe's SIXTH firing, and it is the first one whose
- * TIMING was chosen rather than taken: the outage lands off-hours because
- * Jonatan asked for a window (2026-09-18), not at whatever hour the sweep
- * happened to notice.
+ * This roll (`t_ami_roll_6`) is the first one that costs NO replacement of its
+ * own: it rides the VM replacement that 0.1.41 (per-database Litestream
+ * socket) needed anyway — one cut instead of two, at Jonatan's request
+ * (2026-09-20).
  */
-export const PINNED_AMI_ID = "ami-0535b4996339a5410";
+export const PINNED_AMI_ID = "ami-06f589fd2af7a9fc7";
 
 /**
  * The SSM public parameter the pin is measured against. It MUST stay the same
