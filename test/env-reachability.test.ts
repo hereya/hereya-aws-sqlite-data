@@ -52,6 +52,11 @@ const NOT_THE_STACK_S_JOB = new Set([
   // per-deployment knobs. Exposing one means deciding it should differ between
   // deployments, which none of these should.
   "DRAIN_MS",
+  // Database moves (service/src/move/): the drain wait, the size above which a
+  // move must be forced, how long the cell an app left keeps its files.
+  "MOVE_DRAIN_MS",
+  "MOVE_MAX_BYTES",
+  "MOVE_KEEP_MS",
   "HEARTBEAT_PERIOD_SECONDS",
   "LITESTREAM_SNAPSHOT_INTERVAL",
   "MAX_INFLIGHT_TOTAL",

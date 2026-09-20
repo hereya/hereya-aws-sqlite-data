@@ -124,3 +124,49 @@ test("the last database leaving stops the daemon; the next one starts it", { ski
     rmSync(env.dir, { recursive: true, force: true });
   }
 });
+
+// t_dbmove_p4_move — the hand-off a database MOVE rests on: what the other cell
+// restores right after must hold the last write, and nobody else may notice.
+test("detachOne: the replica holds the LAST write when it returns, and the daemon keeps running", { skip: !haveLitestream }, async () => {
+  const env = makeEnv();
+  try {
+    env.ls.start([env.app("a"), env.app("b")]);
+    assert.ok(await waitFor(() => existsSync(env.socket)));
+    assert.ok(await waitFor(() => existsSync(join(env.dir, "replicas", "org", "b", "app.db"))));
+    const pid = env.ls.childPid;
+
+    // Written an instant before the hand-off — no sync interval has passed.
+    const db = new DatabaseSync(env.app("b").dbPath);
+    db.exec("INSERT INTO t VALUES (42)");
+    db.close();
+    assert.equal(await env.ls.detachOne(env.app("b"), [env.app("a")]), true);
+
+    assert.equal(env.ls.childPid, pid, "letting go of b must not restart replication of a");
+    assert.deepEqual(env.listed(), ["a"]);
+    const restored = join(env.dir, "restored.db");
+    execFileSync(litestreamBin, ["restore", "-o", restored, `file://${join(env.dir, "replicas")}/org/b/app.db`]);
+    const copy = new DatabaseSync(restored, { readOnly: true });
+    assert.deepEqual(copy.prepare("SELECT x FROM t ORDER BY x").all().map((r) => Number(r.x)), [1, 42]);
+    copy.close();
+    // Not watched any more: nothing to hand off, and that is not an error.
+    assert.equal(await env.ls.detachOne(env.app("b"), [env.app("a")]), false);
+  } finally {
+    await env.ls.stop();
+    rmSync(env.dir, { recursive: true, force: true });
+  }
+});
+
+test("detachOne NEVER falls back to a bounce: an unobserved stop throws, and the mover aborts", { skip: !haveLitestream }, async () => {
+  const env = makeEnv();
+  try {
+    env.ls.start([env.app("a")]);
+    assert.ok(await waitFor(() => existsSync(env.socket)));
+    const pid = env.ls.childPid;
+    rmSync(env.socket);
+    await assert.rejects(env.ls.detachOne(env.app("a"), []), /control socket|litestream sync failed/);
+    assert.equal(env.ls.childPid, pid, "no restart: the database is still replicated, exactly as before");
+  } finally {
+    await env.ls.stop();
+    rmSync(env.dir, { recursive: true, force: true });
+  }
+});

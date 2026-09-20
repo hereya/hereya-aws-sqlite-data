@@ -107,6 +107,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     drainMs: intEnv("DRAIN_MS", 5_000),
     cloudMapServiceId: env.CLOUDMAP_SERVICE_ID ?? "",
     cellId: parseCellId(env.CELL_ID),
+    moveDrainMs: intEnv("MOVE_DRAIN_MS", 3_000),
+    moveMaxBytes: intEnv("MOVE_MAX_BYTES", 64 * 1024 * 1024),
+    moveKeepMs: intEnv("MOVE_KEEP_MS", 3_600_000),
     // The Secrets Manager fetch is async (see resolveCapabilitySecret); here we
     // only seed the plaintext-env fallback used when no ARN is provided.
     capabilitySecret: env.CAPABILITY_SECRET ?? "",

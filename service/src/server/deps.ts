@@ -5,6 +5,7 @@ import type { TxRegistry } from "../tx.ts";
 import type { Limiter } from "../limits.ts";
 import type { DbQuotaGuard } from "../quota.ts";
 import type { Relay } from "../relay.ts";
+import type { Moves } from "./move-routes.ts";
 
 export interface ServerDeps {
   cfg: Config;
@@ -24,6 +25,8 @@ export interface ServerDeps {
   onDeleteApp?: (orgId: string, appId: string) => Promise<void>;
   /** VM→VM relay for an app another cell holds. Absent = the 421 goes out as is. */
   relay?: Relay;
+  /** Database moves between cells (move/). Absent = the routes answer 400. */
+  moves?: Moves;
   health?: () => Record<string, unknown>;
   /** While draining (shutdown/spot notice), everything but /health gets 503. */
   isDraining?: () => boolean;

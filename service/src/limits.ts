@@ -23,7 +23,17 @@ export interface AppHold {
   release(): boolean;
 }
 
+/**
+ * What a woken statement finds when the hold it waited on is over and the app
+ * did NOT simply resume (move/mover.ts):
+ * - `departing` — the move is undecided (the hold expired before the mover
+ *   could read the outcome). Nothing may run: 503, "nothing ran, retry".
+ * - `moved` — another cell holds the app now: 421, which build.ts relays.
+ */
+export type ClosedState = "departing" | "moved";
+
 export class Limiter {
+  private readonly closed = new Map<string, ClosedState>();
   private readonly holds = new Map<string, { done: Promise<void>; open: () => void }>();
   private readonly perApp = new Map<string, number>();
   private total = 0;
@@ -55,7 +65,35 @@ export class Limiter {
    */
   async admit(appKey: string): Promise<void> {
     for (let held = this.holds.get(appKey); held; held = this.holds.get(appKey)) await held.done;
+    this.assertOpen(appKey);
     this.acquire(appKey);
+  }
+
+  /** The gate's half of a hold: wait it out WITHOUT taking a slot, so that
+   *  placement is re-read after the move and not before (server/gate.ts). */
+  async whileHeld(appKey: string): Promise<void> {
+    for (let held = this.holds.get(appKey); held; held = this.holds.get(appKey)) await held.done;
+    this.assertOpen(appKey);
+  }
+
+  /**
+   * Close the app to statements for as long as a move is undecided, or for
+   * good once it has left. Outlives the hold ON PURPOSE: a hold expires by
+   * itself (MAX_HOLD_MS) and what it parked must then be refused, never run —
+   * this cell has stopped replicating the file.
+   */
+  close(appKey: string, state: ClosedState): void {
+    this.closed.set(appKey, state);
+  }
+
+  reopen(appKey: string): void {
+    this.closed.delete(appKey);
+  }
+
+  assertOpen(appKey: string): void {
+    const state = this.closed.get(appKey);
+    if (state === "departing") throw new ServiceError("UNAVAILABLE", "this app is being moved to another cell; retry shortly");
+    if (state === "moved") throw new ServiceError("MISPLACED", "this app has moved to another cell");
   }
 
   /**

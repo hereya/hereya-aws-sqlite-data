@@ -21,8 +21,9 @@ export function startTxSweeper(cfg: Config, txRegistry: TxRegistry, manager: App
   return sweeper;
 }
 
-export function startRegistryPoller(cfg: Config, sync: AppSync): NodeJS.Timeout {
+export function startRegistryPoller(cfg: Config, sync: AppSync, beforeSync?: () => Promise<void> | undefined): NodeJS.Timeout {
   const poller = setInterval(() => {
+    void beforeSync?.();
     void sync.syncOnce().catch((err) => {
       console.error(JSON.stringify({ type: "sync", error: (err as Error).message }));
     });

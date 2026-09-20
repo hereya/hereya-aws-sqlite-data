@@ -42,6 +42,13 @@ export class SyncState {
    *  (handover/catchup.ts): they may hold writes no replica has. */
   readonly existingAtBoot = new Set<string>();
   /**
+   * Apps a move is taking AWAY from this cell (sync/depart.ts). From the moment
+   * litestream has let go of the file, nothing here may watch it again unless
+   * the move is cancelled (the value remembers whether to) — `ensureServed` refuses these, below every caller,
+   * because a promotion is the one path that re-registers a database.
+   */
+  readonly departing = new Map<string, { wasReplicated: boolean }>();
+  /**
    * Serializes every mutation of the litestream config.
    *
    * `apply` rewrites the config file from a SNAPSHOT of the replicated set (and

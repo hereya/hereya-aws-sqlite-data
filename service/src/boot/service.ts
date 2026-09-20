@@ -16,6 +16,7 @@ import { assertVecLoadable } from "../vec.ts";
 import { resolveWorkerPath, WorkerPool } from "../worker-host.ts";
 import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { createCells } from "./cells.ts";
+import { createMoves } from "./moves.ts";
 import { createHandoverClient, createOrgQuotaReader, createRegistry } from "./deps.ts";
 import { logDiskVolume } from "./disk-log.ts";
 import { startEvictionSweep, startRegistryPoller, startTxSweeper } from "./loops.ts";
@@ -94,13 +95,18 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     announcedAtMs = Date.now();
   }
 
+  // Settle the database moves a dead process left behind BEFORE placement is
+  // read: what the restore below lists as "ours" must already be decided.
+  const cells = createCells(cfg);
+  const moves = createMoves({ cfg, registry, manager, limiter, sync, txRegistry, relay: cells.relay });
+  await moves?.sweep();
+
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
   const servedAtBoot = await sync.bootRestoreAll();
   bootTimer.mark("restore");
 
   // 4. bind the HTTP API
   let shutdownRef: Shutdown | null = null;
-  const cells = createCells(cfg);
   const server = buildServer({
     cfg,
     registry,
@@ -109,6 +115,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     limiter,
     quota,
     ...(cells.relay ? { relay: cells.relay } : {}),
+    ...(moves ? { moves: moves.routes } : {}),
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
     recordWrite: (orgId, appId, changed) => writeStats.record(orgId, appId, changed),
     onAdminSync: () => sync.syncOnce(),
@@ -172,7 +179,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   // background loops
   const sweeper = startTxSweeper(cfg, txRegistry, manager);
-  const poller = startRegistryPoller(cfg, sync);
+  const poller = startRegistryPoller(cfg, sync, () => moves?.sweep());
 
   writeStats.start(cfg.writeStatsFlushMs);
 

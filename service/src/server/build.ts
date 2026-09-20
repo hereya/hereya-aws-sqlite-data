@@ -5,6 +5,7 @@ import type { ServerDeps } from "./deps.ts";
 import { createGate } from "./gate.ts";
 import { createHandlers } from "./handlers.ts";
 import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, readBody, send, sendRaw } from "./http.ts";
+import { parseMoveApp, parseMoveIn } from "./move-routes.ts";
 import { createRelayOut, isRelayed } from "./relay-out.ts";
 
 export function buildServer(deps: ServerDeps): Server {
@@ -123,6 +124,22 @@ export function buildServer(deps: ServerDeps): Server {
           orgId = q.orgId;
           appId = q.appId;
           payload = { status: "deleted", note: "local file removed; S3 replica retained" };
+          break;
+        }
+        case "/admin/move-app": {
+          if (!deps.moves) throw new ServiceError("BAD_REQUEST", "database moves are not available");
+          const q = parseMoveApp(body);
+          // Only the holder can move it out: anywhere else this is a MISPLACED,
+          // which the catch below relays to the holder like any other request.
+          await assertHeldHere(q.orgId, q.appId);
+          payload = await deps.moves.out.moveOut(q);
+          break;
+        }
+        case "/admin/move-in": {
+          // Cell to cell only: it is not a gateway route, and a caller that is
+          // not a peer has no business claiming a database for this cell.
+          if (!deps.moves || !isRelayed(req)) throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
+          payload = await deps.moves.in.moveIn(parseMoveIn(body));
           break;
         }
         default:

@@ -125,6 +125,12 @@ export interface Config {
   cloudMapServiceId: string;
   /** The cell this instance belongs to (placement.ts). "0" = the origin cell. */
   cellId: string;
+  /** Database moves (move/): how long an app gets to drain before the move gives up. */
+  moveDrainMs: number;
+  /** Above this size a move is refused unless forced: the target's restore would outlast the hold. */
+  moveMaxBytes: number;
+  /** How long the cell an app LEFT keeps its files (set aside under `_moved/`). */
+  moveKeepMs: number;
   // Per-request capability token (spec §6 caller-binding). The shared HMAC
   // secret is resolved at boot: from Secrets Manager when CAPABILITY_SECRET_ARN
   // is set (prod), else from the CAPABILITY_SECRET env var (local/tests). Empty

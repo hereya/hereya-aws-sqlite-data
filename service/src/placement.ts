@@ -140,15 +140,20 @@ export class DdbPlacement implements Placement {
             TableName: this.tableName,
             KeyConditionExpression: "org_id = :p",
             ExpressionAttributeValues: { ":p": { S: PLACEMENT_PARTITION } },
-            ProjectionExpression: "sk, vmId",
+            ProjectionExpression: "sk, vmId, #ph, #tv",
+            ExpressionAttributeNames: { "#ph": "phase", "#tv": "targetVm" },
             ConsistentRead: true,
             ExclusiveStartKey: startKey,
           }),
         );
         for (const item of res.Items ?? []) {
           const sk = item.sk?.S;
-          const vmId = item.vmId?.S;
           if (!sk) continue;
+          // A move that reached `b_started` can only finish on its target
+          // (move/record.ts): from that write on, the target HOLDS the app —
+          // also for a replacement instance booting mid-move on either side.
+          const claimed = item.phase?.S === "b_started" ? item.targetVm?.S : undefined;
+          const vmId = claimed ?? item.vmId?.S;
           // A row without an owner is not "the origin": guessing is how a
           // database gets two writers. But it is ONE app's problem — that app
           // answers 503 and is held by nobody (its replica stays in S3), while
