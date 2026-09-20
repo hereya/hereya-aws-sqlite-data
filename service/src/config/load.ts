@@ -1,6 +1,7 @@
 import type { Config } from "./types.ts";
 import { assertL0RetentionCoversL1, parseLevelIntervals } from "./durations.ts";
 import { resolveSocketPath } from "../litestream/control.ts";
+import { parseCellId } from "../placement.ts";
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // port 0 is valid (ephemeral, used by tests); negatives and garbage are not
@@ -105,6 +106,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     imdsEnabled: env.IMDS_ENABLED === "1" || env.IMDS_ENABLED === "true",
     drainMs: intEnv("DRAIN_MS", 5_000),
     cloudMapServiceId: env.CLOUDMAP_SERVICE_ID ?? "",
+    cellId: parseCellId(env.CELL_ID),
     // The Secrets Manager fetch is async (see resolveCapabilitySecret); here we
     // only seed the plaintext-env fallback used when no ARN is provided.
     capabilitySecret: env.CAPABILITY_SECRET ?? "",

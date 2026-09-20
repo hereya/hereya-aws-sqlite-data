@@ -210,6 +210,59 @@ apps.** `test/shutdown-drain-scale.test.ts` and the concurrency test in
 `test/handover-catchup.test.ts` pin both; each was verified to fail first. And a trial stack
 that does not carry prod's app count measures nothing — seed it (`handover-scale.mjs seed`).
 
+## Placement: a CELL holds an app, not "the VM" (2026-09-20, `t_dbmove_p2_placement`)
+
+Phase 2 of the live-moves plan. **Nothing production can observe changes**: there is still one
+cell and it still holds everything. What changes is that this is now a FACT READ FROM A TABLE
+instead of an assumption welded into four places.
+
+- **A cell** = one serving VM + its replacement slot. `CELL_ID` (the stack sets `"0"`, the
+  origin). Keyed by cell and never by instance id: an instance id changes at every roll, and
+  rewriting 100 placements per deploy would put a per-app loop back on the outage path.
+- **Rows**: registry table, partition `_placement`, `sk = <orgId>/<appId>` →
+  `{vmId, version, phase, targetVm}`. **No row = the origin cell** — no migration, and an empty
+  partition (today) is exactly the old behaviour. Phase 2 only READS `vmId`; nothing writes yet,
+  so the instance role gained nothing (`RegistryRead` already covers `Query`).
+- **`PlacedRegistry`** (`service/src/placement.ts`) wraps the ddb registry so `listActive` only
+  lists this cell's apps. Below every caller on purpose: `doSync` DELETES the local file of any
+  served app missing from that list, so an unfiltered second cell would wipe a moved database at
+  its first reconcile. One strongly consistent `Query` of the partition per `REGISTRY_CACHE_MS`,
+  shared by a burst; **an unreadable placement throws** — "mine" would start a second litestream
+  writer, "not mine" would make the reconcile delete files this cell alone holds. Errors are never
+  cached, and a row without `vmId` is refused rather than read as the origin.
+- **The gate answers `421 MISPLACED`** for an active app held elsewhere, BEFORE `ensureServed`:
+  restoring it here is the dual writer. (Phase 3 turns the 421 into a VM→VM relay; no client
+  ever sees it while there is one cell.)
+- **Cloud Map: "clear MY cell's leftovers"**, no longer "deregister everyone". Registrations carry
+  `DILAYA_CELL`; one without it predates this and counts as the origin's, so the roll that ships
+  this behaves exactly like the previous ones.
+- **Per-app hold** — `Limiter.hold(appKey, maxMs)` / `admit(appKey)`. Every data route calls
+  `admit` where it called `acquire`. It is NOT grafted on `ensureServed`'s `pending` as first
+  sketched: between `authorize` and the slot there is an `await` (the quota), i.e. the very gap
+  eviction covers with a 5-minute grace. In `admit` there is no await between the wake-up and the
+  slot, so once `hold` returns a statement is either counted by `inFlight` or parked — a mover
+  drains by watching `inFlight` reach 0. Holds reads too (a route cannot tell before running),
+  expires on its own (≤ 10 s, `hold-expired`), and `release()` returns **false** when it had
+  expired: what ran under it was not exclusive, the caller must abort. No caller yet (phase 4).
+
+- **A row without `vmId` costs ONE app, not the cell**: that app answers 503 and is held by
+  nobody (its replica stays in S3); everything else keeps serving. The first draft threw on the
+  whole read — one malformed row would then have aborted the BOOT of every org's databases.
+  Stored as `null`, and read with `has`, not `??`: `null ?? ORIGIN` quietly handed the app back
+  to the origin (caught by its test).
+
+**Tried for real** (trial stack `dilayadev-placement-trial`, 100 seeded apps, destroyed the same
+hour — `scripts/acceptance/placement-trial.mjs`, 8/8): the boot survives the consistent `Query`
+with the role as it is (100 apps restored in 13.6 s at 8-wide); Cloud Map accepts the custom
+attribute on the DNS-backed service, and the roll left ONE registration; a row placing an app on
+cell 1 → `/admin/sync` `{removed: 1}`, the app answers 421, its neighbour never notices; an
+ownerless row → that app 503, neighbour 200; row deleted → `{added: 1}`, restored from S3 with the
+write acknowledged before it left.
+
+Deliberately NOT here, moved to phase 3 where two real cells can test them: per-cell handover
+record keys, per-cell heartbeat/metric dimensions and alarms, the `_vms` partition and its grant.
+With one cell each of them would be code no test and no trial could exercise.
+
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 
 Every section below that says "bounce" describes what a config change USED to cost: the config

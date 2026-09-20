@@ -123,6 +123,8 @@ export interface Config {
   imdsEnabled: boolean;
   drainMs: number;
   cloudMapServiceId: string;
+  /** The cell this instance belongs to (placement.ts). "0" = the origin cell. */
+  cellId: string;
   // Per-request capability token (spec §6 caller-binding). The shared HMAC
   // secret is resolved at boot: from Secrets Manager when CAPABILITY_SECRET_ARN
   // is set (prod), else from the CAPABILITY_SECRET env var (local/tests). Empty

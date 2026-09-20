@@ -2,11 +2,18 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 
 import type { Config } from "../config.ts";
 import { DdbOrgQuotaReader, StaticOrgQuotaReader, type OrgQuotaReader } from "../quota.ts";
+import { DdbPlacement, PlacedRegistry } from "../placement.ts";
 import { DdbRegistry, FileRegistry, type Registry } from "../registry.ts";
 
+/**
+ * The registry AS THIS CELL SEES IT: the ddb registry is wrapped so that the
+ * boot restore and the reconcile only ever list the apps placed here.
+ */
 export function createRegistry(cfg: Config): Registry {
   if (cfg.registryMode === "file") return new FileRegistry(cfg.registryFile);
-  return new DdbRegistry({ tableName: cfg.registryTable, region: cfg.awsRegion, cacheMs: cfg.registryCacheMs });
+  const { registryTable: tableName, awsRegion: region, registryCacheMs: cacheMs } = cfg;
+  const placement = new DdbPlacement({ cellId: cfg.cellId, tableName, region, cacheMs });
+  return new PlacedRegistry(new DdbRegistry({ tableName, region, cacheMs }), placement);
 }
 
 /**

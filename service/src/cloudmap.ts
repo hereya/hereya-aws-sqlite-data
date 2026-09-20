@@ -1,7 +1,14 @@
 // Cloud Map self-registration: the API Gateway VPC Link discovers the instance
-// through a service-discovery service; the singleton registers its own private
-// IP at boot (deregister-all-then-register-self is safe precisely because the
-// ASG guarantees at most one live instance) and deregisters on drain.
+// through a service-discovery service; each instance registers its own private
+// IP at boot and deregisters on drain.
+//
+// A crashed predecessor never deregisters, so the boot also clears what it left
+// behind — but only IN ITS OWN CELL (t_dbmove_p2_placement). This used to be
+// "deregister everyone, then register me", safe only while the ASG guaranteed a
+// single live instance: with a second cell, each boot would have evicted the
+// other cell from discovery. Registrations carry their cell as an attribute;
+// one without it predates this and belongs to the origin cell.
+import { ORIGIN_CELL } from "./placement.ts";
 import {
   DeregisterInstanceCommand,
   ListInstancesCommand,
@@ -10,6 +17,12 @@ import {
 } from "@aws-sdk/client-servicediscovery";
 
 const IMDS_BASE = "http://169.254.169.254";
+export const CELL_ATTRIBUTE = "DILAYA_CELL";
+
+/** Whether a registration found at boot is this cell's to clear. */
+export function isStaleOfCell(attributes: Record<string, string> | undefined, cellId: string): boolean {
+  return (attributes?.[CELL_ATTRIBUTE] ?? ORIGIN_CELL) === cellId;
+}
 
 function log(event: Record<string, unknown>): void {
   console.log(JSON.stringify({ type: "cloudmap", ...event }));
@@ -35,24 +48,35 @@ export class CloudMapRegistration {
   private readonly client: ServiceDiscoveryClient;
   private readonly serviceId: string;
   private readonly port: number;
+  private readonly cellId: string;
   private instanceId: string | null = null;
 
-  constructor(opts: { serviceId: string; region: string; port: number; client?: ServiceDiscoveryClient }) {
+  constructor(opts: {
+    serviceId: string;
+    region: string;
+    port: number;
+    cellId?: string;
+    client?: ServiceDiscoveryClient;
+    /** Test seam: the instance's own id and private IP, instead of IMDS. */
+    identity?: () => Promise<[instanceId: string, ip: string]>;
+  }) {
     this.serviceId = opts.serviceId;
+    this.cellId = opts.cellId ?? ORIGIN_CELL;
+    if (opts.identity) this.identity = opts.identity;
     this.port = opts.port;
     this.client = opts.client ?? new ServiceDiscoveryClient({ region: opts.region });
   }
 
-  /** Boot: clear any stale registrations, then register this instance. */
+  private identity = (): Promise<[string, string]> =>
+    Promise.all([imds("/latest/meta-data/instance-id"), imds("/latest/meta-data/local-ipv4")]);
+
+  /** Boot: clear this cell's stale registrations, then register this instance. */
   async register(): Promise<void> {
-    const [instanceId, ip] = await Promise.all([
-      imds("/latest/meta-data/instance-id"),
-      imds("/latest/meta-data/local-ipv4"),
-    ]);
+    const [instanceId, ip] = await this.identity();
 
     const existing = await this.client.send(new ListInstancesCommand({ ServiceId: this.serviceId }));
     for (const inst of existing.Instances ?? []) {
-      if (!inst.Id) continue;
+      if (!inst.Id || !isStaleOfCell(inst.Attributes, this.cellId)) continue;
       try {
         await this.client.send(new DeregisterInstanceCommand({ ServiceId: this.serviceId, InstanceId: inst.Id }));
         log({ event: "deregistered-stale", instanceId: inst.Id });
@@ -68,6 +92,7 @@ export class CloudMapRegistration {
         Attributes: {
           AWS_INSTANCE_IPV4: ip,
           AWS_INSTANCE_PORT: String(this.port),
+          [CELL_ATTRIBUTE]: this.cellId,
         },
       }),
     );
