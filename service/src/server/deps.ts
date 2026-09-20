@@ -5,6 +5,7 @@ import type { TxRegistry } from "../tx.ts";
 import type { Limiter } from "../limits.ts";
 import type { DbQuotaGuard } from "../quota.ts";
 import type { Relay } from "../relay.ts";
+import type { Drains } from "./drain-routes.ts";
 import type { Moves } from "./move-routes.ts";
 
 export interface ServerDeps {
@@ -27,6 +28,10 @@ export interface ServerDeps {
   relay?: Relay;
   /** Database moves between cells (move/). Absent = the routes answer 400. */
   moves?: Moves;
+  /** Emptying a cell into another (drain/). Absent = the routes answer 400. */
+  drains?: Drains;
+  /** A request that came through the GATEWAY (not relayed by a peer), /health excepted. */
+  onGatewayRequest?: () => void;
   health?: () => Record<string, unknown>;
   /** While draining (shutdown/spot notice), everything but /health gets 503. */
   isDraining?: () => boolean;

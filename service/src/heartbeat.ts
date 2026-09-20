@@ -39,6 +39,18 @@ export interface CapacitySource {
    *  = no disk datapoints (the sampler is never invented from a default: a
    *  probe pointed at the wrong volume is worse than no probe). */
   diskPath?: string;
+  /**
+   * Whatever else this instance can measure, read at each tick (cell-gauges.ts).
+   * A gauge that answers null is left out of the tick: a missing datapoint is
+   * true, a zero that nobody measured is not.
+   */
+  gauges?: () => Promise<Gauge[]>;
+}
+
+export interface Gauge {
+  name: string;
+  unit: "Count" | "Seconds";
+  value: number | null;
 }
 
 export class Heartbeat {
@@ -125,6 +137,12 @@ export class Heartbeat {
     return data;
   }
 
+  private async gaugeData(): Promise<MetricDatum[]> {
+    const gauges = await (this.capacity?.gauges?.() ?? Promise.resolve([])).catch(() => [] as Gauge[]);
+    const dimensions = metricDimensions(this.cfg);
+    return gauges.flatMap((g) => (g.value === null ? [] : [{ MetricName: g.name, Dimensions: dimensions, Unit: g.unit, Value: g.value }]));
+  }
+
   start(): void {
     if (!this.cfg.heartbeatEnabled) return;
     const beat = async (): Promise<void> => {
@@ -135,7 +153,7 @@ export class Heartbeat {
       if (!healthy) {
         console.log(JSON.stringify({ type: "heartbeat", skipped: true, reason: "unhealthy" }));
       }
-      const metricData: MetricDatum[] = this.capacityData();
+      const metricData: MetricDatum[] = [...this.capacityData(), ...(await this.gaugeData())];
       if (healthy) {
         metricData.push({
           MetricName: METRIC_NAME,

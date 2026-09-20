@@ -71,6 +71,8 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 | `POST /admin/sync` | `{}` | reconcile served apps against the registry now |
 | `POST /admin/delete-app` | `{org_id, app_id}` | tears down the app's local db (close executor, drop from litestream, delete local file); **S3 replica retained**; used by the connector's `drop-schema` |
 | `POST /admin/move-app` | `{org_id, app_id, to_cell, force?}` | moves ONE app's database to another cell, live (see CLAUDE.md "Moving one database"). Answers `{status: "moved"\|"resumed", fromCell, toCell, version, pauseMs, reason?}`; **409 `MOVE_ABORTED`** when nothing was changed (open transaction, database above `MOVE_MAX_BYTES` without `force`). Any cell may be asked: the relay carries it to the holder |
+| `POST /admin/drain-cell` | `{cell, action:"start", to_cell, big?, leave?}` or `{cell, action:"stop"}` | writes (or lifts) the ORDER to empty a cell into another; the draining cell then moves its apps 8 at a time, and leaves Cloud Map once empty unless `leave:false` (see CLAUDE.md "Emptying a cell"). `big`: `skip` (default) leaves databases above `MOVE_MAX_BYTES` in place, `force` moves them too. Answers `{cellId, instances, order, progress}`; 400 when the target has no serving instance or is itself being drained |
+| `POST /admin/drain-status` | `{cell?}` | `{cells: [{cellId, instances, order, progress}]}` — one cell, or every cell the directory knows. `progress.state`: `draining` \| `empty` \| `blocked` (+ `held`, `moved`, `failed`, `skippedBig`, `inCloudMap`, `lastError`) |
 | `GET /stats?org_id&app_id` | – | `{dbSizeBytes}` (db + WAL on disk); used by the connector's `get-usage-report` |
 | `GET /health` | – | status, apps, litestream up/down, vec (sqlite-vec version) |
 

@@ -2,9 +2,13 @@
 // poll, and the (opt-in) idle-app eviction sweep. Each is `unref`ed so it can
 // never be the thing that holds the process open.
 import type { AppManager } from "../apps.ts";
+import { createCellGauges } from "../cell-gauges.ts";
 import type { Config } from "../config.ts";
 import { daysToMs } from "../eviction.ts";
+import { Heartbeat } from "../heartbeat.ts";
 import type { Limiter } from "../limits.ts";
+import type { Litestream } from "../litestream.ts";
+import type { Relay } from "../relay.ts";
 import type { AppSync } from "../sync.ts";
 import type { TxRegistry } from "../tx.ts";
 import type { WriteStats } from "../write-stats.ts";
@@ -81,4 +85,31 @@ export function startEvictionSweep(args: {
     );
   }
   return evictionSweep;
+}
+
+/**
+ * The dead-man heartbeat plus everything this instance can measure: its own
+ * capacity, and what makes it one cell among several (cell-gauges.ts).
+ */
+export function startHeartbeat(args: {
+  cfg: Config;
+  litestream: Litestream;
+  sync: AppSync;
+  stuckMoves: (() => number) | null;
+  relay: Relay | null;
+}): Heartbeat {
+  const { cfg, litestream, sync, stuckMoves, relay } = args;
+  const heartbeat = new Heartbeat(cfg, () => litestream.healthy, undefined, {
+    litestreamPid: () => litestream.childPid,
+    servedApps: () => sync.servedApps.length,
+    replicatedApps: () => sync.replicatedApps.length,
+    diskPath: cfg.dbDir,
+    gauges: createCellGauges({
+      replicationLagSeconds: () => litestream.replicationLagSeconds(),
+      stuckMoves,
+      relayStats: relay && (() => relay.stats),
+    }),
+  });
+  heartbeat.start();
+  return heartbeat;
 }

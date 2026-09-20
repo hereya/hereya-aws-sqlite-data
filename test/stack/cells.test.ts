@@ -75,7 +75,9 @@ test("vmCount=2: the instances may reach each other on the service port, and onl
 test("vmCount=2: the second cell has its own four alarms, on its OWN series", () => {
   const one = buildTemplate();
   const two = withEnv({ vmCount: "2" }, buildTemplate);
-  assert.equal(count(two, "AWS::CloudWatch::Alarm"), count(one, "AWS::CloudWatch::Alarm") + 4);
+  // +4 capacity alarms and +1 replication lag for cell 1, +2 per cell (move
+  // stuck, relay failures) that only exist with several cells (alarms/moves.ts).
+  assert.equal(count(two, "AWS::CloudWatch::Alarm"), count(one, "AWS::CloudWatch::Alarm") + 4 + 1 + 2 * 2);
   const heartbeats = Object.values(two.findResources("AWS::CloudWatch::Alarm"))
     .map((a) => (a as { Properties: { MetricName: string; Dimensions: { Name: string; Value: unknown }[] } }).Properties)
     .filter((p) => p.MetricName === "Heartbeat");

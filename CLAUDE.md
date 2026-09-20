@@ -487,6 +487,109 @@ handover ON, i.e. production's configuration):
 a step at which the process SIGKILLs itself (`move/crash-points.ts`) — how "a crash at every
 step" is tried for real: `scripts/acceptance/move-trial.mjs <stack> crash`.
 
+## Emptying a cell: the drain (2026-09-21, `t_dbmove_p5_drain_ops`)
+
+Phase 5. `POST /admin/drain-cell {cell, action:"start", to_cell, big?, leave?}` / `{cell, action:"stop"}`
+and `POST /admin/drain-status {cell?}` — gateway routes, answered by ANY cell: an order names no app,
+so it has no holder. Prod still has one cell; with one cell the only thing that changes is one
+consistent `GetItem` per registry poll and the `ReplicationLagMaxSeconds` series.
+
+- **An order is an INTENT, a row — never a fact about where a database is.** `_vms / drain#<cell>`
+  (written by the route) and `_vms / drainstate#<cell>` (written by the draining cell): two rows
+  because the partition only has whole-row `PutItem`/`DeleteItem`, so ONE writer per row is what
+  keeps a progress report from undoing an operator's "stop". No new IAM; `vms.ts` ignores both.
+- **The DRAINING cell drives its own drain** (`service/src/drain/drainer.ts`), not the target as the
+  study sketched: the mover, the file sizes and the open transactions are all there, and a
+  replacement instance booting mid-drain reads the order and carries on. It only ever ASKS
+  `Mover.moveOut`, app by app — the two conditional writes of `move/record.ts` remain the whole
+  safety rule. One look at the order per registry poll, and at once on `/admin/sync` (which the
+  route broadcasts).
+- **No serial loop**: `bootRestoreConcurrency` (8) moves at a time, smallest database first.
+- **A failed move is NOT free** — its app was paused, then resumed. So: no pass at all unless the
+  target has a serving instance; a pass stops after 3 failures in a row; and the next passes are
+  spaced out (2, 4, … 16 polls). A timer only decides to TRY again. A move refused before anything
+  was written (open transaction — 409 `MOVE_ABORTED`) paused nobody and does not count.
+- **`big`**: `skip` (default) leaves any database above `MOVE_MAX_BYTES` where it is and reports it
+  (`skippedBig`, state `blocked`): such a cell is NOT empty, stays in Cloud Map, and its roll is
+  the ordinary handover for what remains. `force` moves it like the others (long pause).
+- **Once empty, the cell LEAVES Cloud Map** (`leave`, default true) — this is what the whole plan
+  was for. The cuts measured in phase 3 came from the gateway still targeting an instance that
+  was going away; a cell that left discovery minutes earlier can be replaced and nobody notices.
+  It stays reachable through the relay (its `_vms` row says `serving`).
+  - **Its replacement stays out too**: at boot step 6, a cell that holds nothing and finds an
+    order with `leave` does not register. Unreadable order = it registers (in discovery a cell can
+    always relay: walking in is the answer that cannot hurt).
+  - A peer that wrongly evicted it does not walk it back in (`boot/cells.ts`).
+  - **The order stays in force until lifted.** An app born meanwhile on a drained ORIGIN (no row =
+    the origin) is moved at the next poll. Lifting the order (`stop`) is what re-registers.
+  - An unreadable order is no judgement: no move, no leave, no re-entry.
+  - ⚠️ **Out of Cloud Map is NOT out of the gateway.** The VPC link keeps its targets for a while:
+    on the trial stack requests still reached the cell ~10–25 s after it had deregistered, and
+    an instance replaced in that window showed clients its shutdown 503s. The cell measures it
+    itself: `progress.gatewayQuietMs` = ms since the last request that came THROUGH the gateway
+    (not relayed), on its own clock. **Replace the instance only once it is past ~2 minutes.**
+- `start` is refused when the target is itself being drained (two cells passing the same
+  databases back and forth, one pause each time), or when either cell has no serving instance.
+
+**Rolling the OS without a cut** — `amiIdByCell` ("0=ami-old") holds the named cells on an image
+while the others take `amiId`/the pin. A launch-template change rolls ITS cell at the deploy that
+carries it; one image for all would roll every cell at once, databases on board. The procedure,
+from one cell: (1) bump the pin, deploy with `vmCount=2` and `amiIdByCell=0=<old>` — cell 1 is born
+on the new image, cell 0 does not move; (2) drain 0 → 1, wait for `empty`, `inCloudMap: false` AND `gatewayQuietMs` ≥ 120 000;
+(3) deploy without `amiIdByCell` — cell 0 rolls, empty and unseen; (4) `stop` the order, drain
+1 → 0, `stop`; (5) deploy with `vmCount=1`. Drop the override when done: `check:ami` reads the pin.
+
+- **A progress report only speaks for the order it names** (`orderedAtMs`): it outlives its order,
+  and the first real run read the "empty" of the PREVIOUS drain as the answer to one ordered a
+  second earlier. `drain-status` shows no progress until the cell has looked at the current order.
+
+**Tried for real** (trial stack `dilayadev-drain-trial`, `vmCount=2`, handover on, 100 seeded apps,
+destroyed the same night — `scripts/acceptance/drain-trial.mjs`):
+
+- **100 databases emptied in 19–27 s, five full drains over three runs, both ways** (one pass, 8
+  at a time, on t4g.micro): 0 failed move, 0 row left mid-move, **0 acknowledged write lost** on
+  five apps written every 100 ms through it, nothing refused by the service. Longest client
+  silence 1.9–2.8 s, 4.2 s once (against ~1.3 s for a move alone in phase 4: eight restores share
+  one small VM). **21/21 on the final run.** The way
+  back returns every app to a cell that still held an older copy of it (`clearForArrival`).
+- The role really may write both rows in `_vms`; any cell answers the routes; the reverse order
+  is refused while the first stands.
+- The emptied cell left Cloud Map; an app born meanwhile on the drained origin (through the
+  relay) was on the other cell within a poll, its row intact.
+- **Replacing the emptied cell's instance, once `gatewayQuietMs` ≥ 90 s (twice): no VM refused
+  any client, longest silence 0.55 s** over ~3 000 writes on three apps each time. The FIRST run
+  replaced it ~25 s after the cell had left Cloud Map and clients saw four of its shutdown 503s —
+  which is how `gatewayQuietMs` came to exist — against scattered 4–8 s gaps
+  for every org when a cell is rolled with its databases on board (phase 3). The replacement
+  stayed out of Cloud Map; lifting the order brought it back within a poll.
+- `ReplicationLagMaxSeconds` on S3: published by both cells, **max 2.9 s with ~100 idle
+  databases** — `last_sync_at` does advance without writes on S3 too, so the alarm will not fire
+  on a quiet night.
+- Background of that stack, before any drain: ~1 gateway-only 503 per 400–600 requests under
+  concurrent load (`integrationLatency: 0`, no `error.code` — the connector replays those).
+- ⚠️ Found on the way, NOT a drain defect (`t_worker_evict_inflight_503`, proposed): 100 reads
+  in parallel on 100 apps → ~9 × `503 "app is shutting down"` — `MAX_LIVE_WORKERS` is 8 and the
+  pool evicts a worker that has a statement in flight.
+
+- **"stop" means stop**: an order lifted 4 s into a drain left 75 apps where they were, 26 moved,
+  no row mid-move. (The second run's pass had moved all 86 queued apps AFTER the stop — a running
+  pass now re-reads its order when poked, and the route pokes.)
+
+**Three series, three alarms** (`service/src/cell-gauges.ts`, `lib/stack/alarms/moves.ts`), all
+published by the heartbeat under the cell's dimensions, none breaching on silence:
+
+- `ReplicationLagMaxSeconds` (every cell, origin included) — the worst "now − `last_sync_at`"
+  among the databases litestream watches (`litestream list -json` on the control socket). Tried on
+  0.5.17: the stamp advances every sync interval even when nothing was written, and STANDS STILL
+  while the replica cannot be written — so an idle database has no lag, and this is the failure
+  neither the heartbeat (litestream is running) nor the capacity alarms can see. Alarm above
+  `replicationLagAlarmSeconds` (300), 3 of 5.
+- `MovesStuck` (several cells only) — moves naming this cell seen in ≥ 4 consecutive sweeps with
+  the same version (`move/stuck.ts`). Counted in OUR sweeps: a row has no timestamp, on purpose.
+- `RelayedRequests` / `RelayFailures` per tick. Only the FAILURES are alarmed (> 20 in 5 min,
+  twice): with N cells (N−1)/N of the traffic is relayed by design, so the rate is a fact about
+  the gateway's spread, not a fault.
+
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 
 Every section below that says "bounce" describes what a config change USED to cost: the config

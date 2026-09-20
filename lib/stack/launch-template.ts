@@ -3,14 +3,14 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { PINNED_AMI_ID } from "../ami-pin.ts";
 import type { StackContext } from "./context.ts";
 import { input } from "./inputs.ts";
-import { resolveMachineImage } from "./machine-image.ts";
+import { amiIdForCell, resolveMachineImage } from "./machine-image.ts";
 
 export function createLaunchTemplate(stack: cdk.Stack, ctx: StackContext): void {
   ctx.launchTemplate = buildLaunchTemplate(stack, ctx, "LaunchTemplate", ctx.userData);
 }
 
 /** Every cell's template is this one, user data apart (cells.ts). */
-export function buildLaunchTemplate(stack: cdk.Stack, ctx: StackContext, id: string, userData: ec2.UserData): ec2.LaunchTemplate {
+export function buildLaunchTemplate(stack: cdk.Stack, ctx: StackContext, id: string, userData: ec2.UserData, cellId = "0"): ec2.LaunchTemplate {
   // Root volume size. Until 2026-08-25 this was not set AT ALL: the launch
   // template carried no blockDevices, so the ASG silently inherited the AMI's
   // own 8 GB root — a number nobody chose, running in production for four
@@ -35,7 +35,7 @@ export function buildLaunchTemplate(stack: cdk.Stack, ctx: StackContext, id: str
   }
 
   return new ec2.LaunchTemplate(stack, id, {
-    machineImage: resolveMachineImage(stack, input("amiId", PINNED_AMI_ID).trim()),
+    machineImage: resolveMachineImage(stack, amiIdForCell(cellId, input("amiId", PINNED_AMI_ID).trim(), input("amiIdByCell", ""))),
     instanceType: new ec2.InstanceType(ctx.instanceType),
     role: ctx.role,
     securityGroup: ctx.instanceSg,

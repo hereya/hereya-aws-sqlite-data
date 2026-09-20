@@ -5,6 +5,7 @@ import type { ServerDeps } from "./deps.ts";
 import { createGate } from "./gate.ts";
 import { createHandlers } from "./handlers.ts";
 import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, readBody, send, sendRaw } from "./http.ts";
+import { parseDrainCell, parseDrainStatus } from "./drain-routes.ts";
 import { parseMoveApp, parseMoveIn } from "./move-routes.ts";
 import { createRelayOut, isRelayed, ServeHere } from "./relay-out.ts";
 
@@ -52,6 +53,8 @@ export function buildServer(deps: ServerDeps): Server {
         });
         return;
       }
+      // What an emptied cell waits to see stop before its instance is replaced (drain/drainer.ts).
+      if (!isRelayed(req)) deps.onGatewayRequest?.();
       if (deps.isDraining?.()) {
         throw new ServiceError("UNAVAILABLE", "instance is shutting down; retry shortly");
       }
@@ -142,6 +145,19 @@ export function buildServer(deps: ServerDeps): Server {
           payload = await deps.moves.in.moveIn(parseMoveIn(body));
           break;
         }
+        case "/admin/drain-cell": {
+          if (!deps.drains) throw new ServiceError("BAD_REQUEST", "cell drains are not available");
+          const q = parseDrainCell(body);
+          payload = q.action === "start" ? await deps.drains.admin.start(q) : await deps.drains.admin.stop(q.cellId);
+          // The order is a row; the cell it names must look at it now, not in 30 s.
+          deps.drains.poke();
+          if (deps.relay) await deps.relay.broadcast({ method: "POST", path: "/admin/sync", body: "{}" });
+          break;
+        }
+        case "/admin/drain-status":
+          if (!deps.drains) throw new ServiceError("BAD_REQUEST", "cell drains are not available");
+          payload = await deps.drains.admin.status(parseDrainStatus(body).cellId);
+          break;
         default:
           throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
       }

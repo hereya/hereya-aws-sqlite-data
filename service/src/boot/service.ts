@@ -3,7 +3,6 @@
 // Any restore failure aborts the boot — never serve partially restored.
 import type { Config } from "../config.ts";
 import { AppManager, appKeyOf } from "../apps.ts";
-import { Heartbeat } from "../heartbeat.ts";
 import { Limiter } from "../limits.ts";
 import { Litestream } from "../litestream.ts";
 import { DbQuotaGuard } from "../quota.ts";
@@ -18,7 +17,7 @@ import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { startCellsAndMoves } from "./moves.ts";
 import { createHandoverClient, createOrgQuotaReader, createRegistry } from "./deps.ts";
 import { logDiskVolume } from "./disk-log.ts";
-import { startEvictionSweep, startRegistryPoller, startTxSweeper } from "./loops.ts";
+import { startEvictionSweep, startHeartbeat, startRegistryPoller, startTxSweeper } from "./loops.ts";
 import { BootTimer, publishBootTiming } from "./timing.ts";
 import { runHandoverGate } from "../handover/gate.ts";
 import { announceWarming } from "../handover/protocol.ts";
@@ -94,15 +93,15 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     announcedAtMs = Date.now();
   }
 
+  let shutdownRef: Shutdown | null = null;
   // Orphaned database moves are settled BEFORE placement is read (boot/moves.ts).
-  const { cells, moves } = await startCellsAndMoves({ cfg, registry, manager, limiter, sync, txRegistry });
+  const { cells, moves, drain, adminRoutes } = await startCellsAndMoves({ cfg, registry, manager, limiter, sync, txRegistry, isShuttingDown: () => shutdownRef?.isDraining ?? false });
 
   // 1-3. registry + restore-then-serve (throws on any failure = boot aborts)
   const servedAtBoot = await sync.bootRestoreAll();
   bootTimer.mark("restore");
 
   // 4. bind the HTTP API
-  let shutdownRef: Shutdown | null = null;
   const server = buildServer({
     cfg,
     registry,
@@ -111,10 +110,11 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     limiter,
     quota,
     ...(cells.relay ? { relay: cells.relay } : {}),
-    ...(moves ? { moves: moves.routes } : {}),
+    ...adminRoutes,
+    onGatewayRequest: () => drain?.sawGatewayRequest(),
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
     recordWrite: (orgId, appId, changed) => writeStats.record(orgId, appId, changed),
-    onAdminSync: () => sync.syncOnce(),
+    onAdminSync: () => (drain?.routes.poke(), sync.syncOnce()),
     onDeleteApp: (orgId, appId) => sync.removeApp(orgId, appId),
     health: () => ({ litestream: litestream.healthy ? "up" : "down", vec: vecVersion }),
     isDraining: () => shutdownRef?.isDraining ?? false,
@@ -166,7 +166,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   bootTimer.mark("litestream");
 
   // 6. enter Cloud Map and tell the other cells (`_vms`) — only once the API can answer
-  const { cloudMap, peerWatch } = await cells.join(port);
+  const { cloudMap, peerWatch } = await cells.join(port, await drain?.startsOut(servedAtBoot.length));
   // The boot ENDS here: until this registration lands, API Gateway has no
   // target and every request is a 500 (see the connector's dataapi-retry.ts).
   bootTimer.mark("register");
@@ -174,19 +174,13 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   // background loops
   const sweeper = startTxSweeper(cfg, txRegistry, manager);
-  const poller = startRegistryPoller(cfg, sync, () => moves?.sweep());
+  const poller = startRegistryPoller(cfg, sync, async () => (await moves?.sweep(), drain?.tick()));
 
   writeStats.start(cfg.writeStatsFlushMs);
 
   const evictionSweep = startEvictionSweep({ cfg, sync, writeStats, txRegistry, limiter });
 
-  const heartbeat = new Heartbeat(cfg, () => litestream.healthy, undefined, {
-    litestreamPid: () => litestream.childPid,
-    servedApps: () => sync.servedApps.length,
-    replicatedApps: () => sync.replicatedApps.length,
-    diskPath: cfg.dbDir,
-  });
-  heartbeat.start();
+  const heartbeat = startHeartbeat({ cfg, litestream, sync, stuckMoves: moves && (() => moves.stuck.count), relay: cells.relay });
 
   logDiskVolume(cfg.dbDir);
 

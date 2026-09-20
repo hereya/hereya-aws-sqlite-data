@@ -31,6 +31,9 @@ export function createHttpApi(stack: cdk.Stack, ctx: StackContext): void {
     // Move one database to another cell (service/src/move/). `/admin/move-in`,
     // its cell-to-cell half, is deliberately NOT a gateway route.
     [apigwv2.HttpMethod.POST, "/admin/move-app"],
+    // Empty a whole cell into another, and read where that stands (service/src/drain/).
+    [apigwv2.HttpMethod.POST, "/admin/drain-cell"],
+    [apigwv2.HttpMethod.POST, "/admin/drain-status"],
     [apigwv2.HttpMethod.GET, "/stats"],
     [apigwv2.HttpMethod.GET, "/health"],
   ] as const) {

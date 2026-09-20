@@ -8,7 +8,7 @@
 // first, the write fails and the app is the target's); a move towards us that
 // reached `b_started` is FINALIZED (placement already reads it as ours).
 import { sweepMoved } from "../sync/depart.ts";
-import type { MoveRecord } from "./record.ts";
+import type { MoveRecord, MoveRow } from "./record.ts";
 
 export interface SweepDeps {
   cellId: string;
@@ -17,12 +17,16 @@ export interface SweepDeps {
   isActive: (key: string) => boolean;
   dbDir: string;
   keepMs: number;
+  /** Every unsettled move that names this cell, driven or not — what `StuckMoves` counts. */
+  onInFlight?: (rows: MoveRow[]) => void;
 }
 
 export async function sweepMoves(deps: SweepDeps): Promise<{ cancelled: number; finalized: number; deleted: number }> {
   let cancelled = 0;
   let finalized = 0;
-  for (const row of await deps.record.inFlight()) {
+  const inFlight = await deps.record.inFlight();
+  deps.onInFlight?.(inFlight.filter((row) => row.vmId === deps.cellId || row.targetVm === deps.cellId));
+  for (const row of inFlight) {
     if (deps.isActive(row.key)) continue;
     const slash = row.key.indexOf("/");
     if (slash < 0) continue;

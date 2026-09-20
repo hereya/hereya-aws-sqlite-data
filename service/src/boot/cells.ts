@@ -15,8 +15,15 @@ const PEER_WATCH_MS = 20_000;
 export interface Cells {
   /** Null in file (local-dev) mode: no table, so no directory to find a peer in. */
   relay: Relay | null;
-  /** Boot step 6: enter discovery, then tell the peers. */
-  join(port: number): Promise<{ cloudMap: CloudMapRegistration | null; peerWatch: PeerWatch | null }>;
+  /** This instance's registration, once `join` has run. */
+  readonly cloudMap: CloudMapRegistration | null;
+  /** The `_vms` rows, for whoever needs more than the relay (drain/admin.ts). */
+  directory: VmDirectory | null;
+  /**
+   * Boot step 6: enter discovery, then tell the peers. `stayOut` = this cell
+   * was emptied and told to leave Cloud Map: the peers are told, the gateway is not.
+   */
+  join(port: number, stayOut?: boolean): Promise<{ cloudMap: CloudMapRegistration | null; peerWatch: PeerWatch | null }>;
 }
 
 export function createCells(cfg: Config): Cells {
@@ -26,22 +33,25 @@ export function createCells(cfg: Config): Cells {
       : null;
   const relay = directory ? new Relay({ cellId: cfg.cellId, peers: directory, timeoutMs: RELAY_TIMEOUT_MS }) : null;
 
-  async function join(port: number): Promise<{ cloudMap: CloudMapRegistration | null; peerWatch: PeerWatch | null }> {
+  let joinedAs: CloudMapRegistration | null = null;
+
+  async function join(port: number, stayOut = false): Promise<{ cloudMap: CloudMapRegistration | null; peerWatch: PeerWatch | null }> {
     if (!cfg.cloudMapServiceId) return { cloudMap: null, peerWatch: null };
-    const cloudMap = new CloudMapRegistration({
+    const cloudMap = (joinedAs = new CloudMapRegistration({
       serviceId: cfg.cloudMapServiceId,
       region: cfg.awsRegion,
       port,
       cellId: cfg.cellId,
-    });
-    await cloudMap.register();
+    }));
+    await cloudMap.register({ enter: !stayOut });
     const self = cloudMap.registered;
     if (!directory || !self) return { cloudMap, peerWatch: null };
     const peerWatch = new PeerWatch({
       directory,
       self,
       deregisterPeer: (instanceId) => cloudMap.deregisterPeer(instanceId),
-      registerSelf: () => cloudMap.registerSelf(),
+      // A peer that wrongly evicted us must not walk a drained cell back in.
+      registerSelf: () => (cloudMap.inCloudMap ? cloudMap.registerSelf() : Promise.resolve()),
     });
     // ⚠️ Never fatal. With ONE cell nobody reads this row, and a boot that
     // aborts here is a total outage of every org's databases over a row that
@@ -55,5 +65,12 @@ export function createCells(cfg: Config): Cells {
     return { cloudMap, peerWatch };
   }
 
-  return { relay, join };
+  return {
+    relay,
+    directory,
+    join,
+    get cloudMap() {
+      return joinedAs;
+    },
+  };
 }

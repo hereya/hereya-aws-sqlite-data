@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "./config.ts";
 import { buildLitestreamConfig } from "./litestream/config-file.ts";
-import { ControlSocket, diffWatched, pooled } from "./litestream/control.ts";
+import { ControlSocket, diffWatched, maxLagSeconds, pooled } from "./litestream/control.ts";
 import { Restorer } from "./litestream/restore.ts";
 
 export interface LitestreamApp {
@@ -39,6 +39,12 @@ export class Litestream {
     this.cfg = cfg;
     this.restorer = new Restorer(cfg);
     this.control = cfg.litestreamSocketPath ? new ControlSocket(cfg.litestreamBin, cfg.litestreamSocketPath) : null;
+  }
+
+  /** The worst per-database replication lag, in seconds (control.ts); null = nothing to say. Never throws. */
+  async replicationLagSeconds(): Promise<number | null> {
+    if (!this.control || !this.child) return null;
+    return this.control.lastSyncs().then((entries) => maxLagSeconds(entries, Date.now()), () => null);
   }
 
   replicaUrl(app: LitestreamApp): string {

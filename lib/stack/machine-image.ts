@@ -23,6 +23,26 @@ import { PINNED_AMI_ID, PINNED_AMI_REGION } from "../ami-pin.ts";
  * roll the pin, which the daily scan surfaces. `amiId=latest` restores the
  * old auto-resolving behaviour (surprise roll included).
  */
+/**
+ * The AMI of ONE cell (t_dbmove_p5_drain_ops). `amiIdByCell` ("0=ami-…,2=ami-…")
+ * overrides `amiId`/the pin for the cells it names, and only those.
+ *
+ * It exists for one procedure: rolling the OS WITHOUT a cut. A launch template
+ * change rolls its cell at the deploy that carries it, and one `amiId` for all
+ * would roll every cell at once, databases on board. Holding a cell on the OLD
+ * image while another takes the new one is what lets a cell be emptied first
+ * (`/admin/drain-cell`) and rolled empty. Not a way to run mixed images for
+ * long: `check:ami` reads the pin, so drop the override once the roll is done.
+ */
+export function amiIdForCell(cellId: string, amiId: string, byCell: string): string {
+  for (const pair of byCell.split(",").map((p) => p.trim()).filter((p) => p !== "")) {
+    const [cell, ami, ...rest] = pair.split("=").map((p) => p.trim());
+    if (!cell || !ami || rest.length > 0) throw new Error(`invalid amiIdByCell entry: ${JSON.stringify(pair)} (expected "<cellId>=<ami-id>")`);
+    if (cell === cellId) return ami;
+  }
+  return amiId;
+}
+
 export function resolveMachineImage(stack: cdk.Stack, amiId: string): ec2.IMachineImage {
   if (amiId === "latest") {
     return ec2.MachineImage.latestAmazonLinux2023({

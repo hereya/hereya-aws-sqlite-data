@@ -16,6 +16,7 @@ import { createLaunchTemplate } from "./stack/launch-template.ts";
 import { createAsg } from "./stack/asg.ts";
 import { createExtraCells } from "./stack/cells.ts";
 import { createCellAlarms } from "./stack/alarms/cells.ts";
+import { createMoveAlarms } from "./stack/alarms/moves.ts";
 import { createLivenessAlarms } from "./stack/alarms/liveness.ts";
 import { createHeadroomAlarms } from "./stack/alarms/headroom.ts";
 import { createRegistryAlarms } from "./stack/alarms/registry.ts";
@@ -69,6 +70,7 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
     createHeadroomAlarms(this, ctx);
     createRegistryAlarms(this, ctx);
     createCellAlarms(this, ctx);
+    createMoveAlarms(this, ctx);
     createTelegramRelay(this, ctx);
 
     createOutputs(this, ctx);
