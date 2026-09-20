@@ -45,7 +45,7 @@ export function createExtraCells(stack: cdk.Stack, ctx: StackContext): void {
   for (let i = 1; i < vmCount; i += 1) {
     const cellId = String(i);
     const userData = buildCellUserData(stack, ctx, cellId);
-    const launchTemplate = buildLaunchTemplate(stack, ctx, `LaunchTemplateCell${cellId}`, userData);
+    const launchTemplate = buildLaunchTemplate(stack, ctx, `LaunchTemplateCell${cellId}`, userData, cellId);
     ctx.extraCells.push({ cellId, asg: buildAsg(stack, ctx, `AsgCell${cellId}`, launchTemplate) });
   }
 }

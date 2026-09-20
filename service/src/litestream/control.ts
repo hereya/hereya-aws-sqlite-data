@@ -77,6 +77,28 @@ export class ControlSocket {
     await this.remove(app);
   }
 
+  /**
+   * When the daemon last completed a sync of each database it watches
+   * (`list -json`). Tried on 0.5.17: the stamp advances every sync interval even
+   * when nothing was written, and STANDS STILL while the replica cannot be
+   * written — so "now minus the stamp" is a lag, and an idle database has none.
+   * Null = never synced yet. Both clocks are this machine's.
+   */
+  lastSyncs(): Promise<{ path: string; lastSyncAtMs: number | null }[]> {
+    const args = ["list", "-json", "-timeout", String(COMMAND_TIMEOUT_S), "-socket", this.path];
+    return new Promise((resolve, reject) => {
+      execFile(this.bin, args, { timeout: (COMMAND_TIMEOUT_S + 2) * 1000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(`litestream list failed: ${stderr.trim() || err.message}`));
+        try {
+          const dbs = (JSON.parse(stdout) as { databases?: { path: string; last_sync_at?: string }[] }).databases ?? [];
+          resolve(dbs.map((d) => ({ path: d.path, lastSyncAtMs: parseStamp(d.last_sync_at) })));
+        } catch (parseErr) {
+          reject(new Error(`litestream list: unreadable answer: ${(parseErr as Error).message}`));
+        }
+      });
+    });
+  }
+
   private run(command: string, options: string[], dbPath: string): Promise<void> {
     const args = [command, ...options, "-timeout", String(COMMAND_TIMEOUT_S), "-socket", this.path, dbPath];
     return new Promise<void>((resolve, reject) => {
@@ -108,4 +130,17 @@ export function diffWatched(
     added: apps.filter((app) => !watched.has(app.dbPath)),
     removed: [...watched.values()].filter((app) => !wanted.has(app.dbPath)),
   };
+}
+
+/** Go prints a zero time as year 1: that is "never", not a lag of two thousand years. */
+function parseStamp(raw: string | undefined): number | null {
+  const ms = raw === undefined ? Number.NaN : Date.parse(raw);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+/** The worst replication lag among the watched databases, in seconds; null when none has synced yet. */
+export function maxLagSeconds(entries: { lastSyncAtMs: number | null }[], nowMs: number): number | null {
+  const stamps = entries.map((e) => e.lastSyncAtMs).filter((ms): ms is number => ms !== null);
+  if (stamps.length === 0) return null;
+  return Math.max(0, (nowMs - Math.min(...stamps)) / 1000);
 }

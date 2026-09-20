@@ -71,8 +71,16 @@ export class CloudMapRegistration {
   private identity = (): Promise<[string, string]> =>
     Promise.all([imds("/latest/meta-data/instance-id"), imds("/latest/meta-data/local-ipv4")]);
 
-  /** Boot: clear this cell's stale registrations, then register this instance. */
-  async register(): Promise<void> {
+  /** Whether the gateway can target this instance right now (drain/drainer.ts: `Presence`). */
+  inCloudMap = false;
+
+  /**
+   * Boot: clear this cell's stale registrations, then register this instance —
+   * unless `enter` is false: a cell that was EMPTIED and told to stay out of
+   * discovery (t_dbmove_p5_drain_ops) must not walk back in because its instance
+   * was replaced. It is still reachable through the relay (`_vms`).
+   */
+  async register(opts: { enter?: boolean } = {}): Promise<void> {
     const [instanceId, ip] = await this.identity();
 
     const existing = await this.client.send(new ListInstancesCommand({ ServiceId: this.serviceId }));
@@ -88,7 +96,20 @@ export class CloudMapRegistration {
 
     this.instanceId = instanceId;
     this.ip = ip;
-    await this.registerSelf();
+    if (opts.enter === false) log({ event: "stayed-out", instanceId, reason: "this cell is drained" });
+    else await this.registerSelf();
+  }
+
+  enter(): Promise<void> {
+    return this.registerSelf();
+  }
+
+  /** Leave discovery but KEEP serving (an emptied cell). Throws if it could not: `inCloudMap` must stay true of the world. */
+  async leave(): Promise<void> {
+    if (!this.instanceId) return;
+    await this.client.send(new DeregisterInstanceCommand({ ServiceId: this.serviceId, InstanceId: this.instanceId }));
+    this.inCloudMap = false;
+    log({ event: "left", instanceId: this.instanceId });
   }
 
   /** Who registered, for the `_vms` row (vms.ts). Null before `register()`. */
@@ -111,6 +132,7 @@ export class CloudMapRegistration {
         },
       }),
     );
+    this.inCloudMap = true;
     log({ event: "registered", instanceId: this.instanceId, ip: this.ip, port: this.port });
   }
 

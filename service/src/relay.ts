@@ -87,6 +87,8 @@ export class Relay {
   private readonly peers: PeerLookup;
   private readonly sendOpts: SendOpts;
   private readonly sender: Sender;
+  /** Since boot: requests handed to a peer, and those that got no answer from one (cell-gauges.ts). */
+  readonly stats = { forwarded: 0, failed: 0 };
 
   constructor(opts: { cellId: string; peers: PeerLookup; timeoutMs: number; connectTimeoutMs?: number; sender?: Sender }) {
     this.cellId = opts.cellId;
@@ -96,6 +98,16 @@ export class Relay {
   }
 
   async forward(toCell: string, req: RelayRequest): Promise<RelayedResponse> {
+    this.stats.forwarded += 1;
+    try {
+      return await this.forwardOnce(toCell, req);
+    } catch (err) {
+      this.stats.failed += 1;
+      throw err;
+    }
+  }
+
+  private async forwardOnce(toCell: string, req: RelayRequest): Promise<RelayedResponse> {
     let targets = await this.peers.targets(toCell);
     if (targets.length === 0) {
       // A cell that just rolled is announced under a new instance id.

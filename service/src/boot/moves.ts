@@ -5,16 +5,22 @@ import type { Limiter } from "../limits.ts";
 import { Arrival } from "../move/arrival.ts";
 import { Mover } from "../move/mover.ts";
 import { DdbMoveRecord } from "../move/record.ts";
+import { StuckMoves } from "../move/stuck.ts";
 import { sweepMoves } from "../move/sweep.ts";
 import type { Registry } from "../registry.ts";
 import type { Relay } from "../relay.ts";
 import type { Moves } from "../server/move-routes.ts";
 import type { AppSync } from "../sync.ts";
 import type { TxRegistry } from "../tx.ts";
+import type { ServerDeps } from "../server/deps.ts";
 import { createCells, type Cells } from "./cells.ts";
+import { createDrain, type DrainRuntime } from "./drain.ts";
 
 export interface MovesRuntime {
   routes: Moves;
+  /** The side a database LEAVES — what a cell drain asks, app by app (boot/drain.ts). */
+  mover: Mover;
+  stuck: StuckMoves;
   /** Settle the moves no live process is driving. NEVER throws: a boot must not
    *  abort over it — placement reads an unsettled row safely either way. */
   sweep(): Promise<void>;
@@ -47,6 +53,7 @@ export function createMoves(args: {
     drainMs: cfg.moveDrainMs,
     maxBytes: cfg.moveMaxBytes,
   });
+  const stuck = new StuckMoves();
   const arrival = new Arrival({
     cellId: cfg.cellId,
     record,
@@ -57,6 +64,8 @@ export function createMoves(args: {
   });
   return {
     routes: { out: mover, in: arrival },
+    mover,
+    stuck,
     sweep: async () => {
       try {
         const settled = await sweepMoves({
@@ -65,6 +74,7 @@ export function createMoves(args: {
           isActive: (key) => mover.active.has(key) || arrival.active.has(key),
           dbDir: cfg.dbDir,
           keepMs: cfg.moveKeepMs,
+          onInFlight: (rows) => stuck.observe(rows),
         });
         if (settled.cancelled + settled.finalized > 0) reloadPlacement();
       } catch (err) {
@@ -81,10 +91,12 @@ export function createMoves(args: {
  * replicated here while its target is still free to claim it.
  */
 export async function startCellsAndMoves(
-  args: Omit<Parameters<typeof createMoves>[0], "relay">,
-): Promise<{ cells: Cells; moves: MovesRuntime | null }> {
+  args: Omit<Parameters<typeof createMoves>[0], "relay"> & { isShuttingDown: () => boolean },
+): Promise<{ cells: Cells; moves: MovesRuntime | null; drain: DrainRuntime | null; adminRoutes: Pick<ServerDeps, "moves" | "drains"> }> {
   const cells = createCells(args.cfg);
   const moves = createMoves({ ...args, relay: cells.relay });
   await moves?.sweep();
-  return { cells, moves };
+  const drain = createDrain({ ...args, cells, moves });
+  const adminRoutes = { ...(moves ? { moves: moves.routes } : {}), ...(drain ? { drains: drain.routes } : {}) };
+  return { cells, moves, drain, adminRoutes };
 }

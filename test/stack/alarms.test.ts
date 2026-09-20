@@ -46,7 +46,8 @@ test("disk headroom is alarmed — the resource eviction never gives back", () =
 
 test("every alarm notifies, in both directions", () => {
   const list = Object.values(template.findResources("AWS::CloudWatch::Alarm"));
-  assert.equal(list.length, 6);
+  // 6 + the replication-lag alarm (alarms/moves.ts, t_dbmove_p5_drain_ops).
+  assert.equal(list.length, 7);
   for (const alarm of list) {
     assert.ok((alarm.Properties.AlarmActions ?? []).length >= 1, "alarm must notify");
     assert.ok((alarm.Properties.OKActions ?? []).length >= 1, "recovery must notify too");

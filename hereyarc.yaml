@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.46
+version: 0.1.47
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -81,6 +81,14 @@ parameters:
     description: "Taille du disque de la VM des bases, en Go entiers (défaut 30, plage 8..16384). AVANT la version 0.1.28 cette taille n'était fixée NULLE PART : le modèle de lancement ne portait aucun blockDevices, donc l'ASG héritait silencieusement du volume racine de l'image, soit 8 Go — un chiffre que personne n'avait choisi et qui a tourné quatre mois en production. Même classe de problème que l'AMI avant son épinglage : une valeur SUBIE plutôt que possédée, et tant qu'elle reste implicite, une montée de l'épingle d'image peut changer la taille du disque toute seule. Le défaut vient de la loi de dimensionnement mesurée le 25/08/2026 : il faut ~3x le total des bases (une app coûte sa base plus un instantané litestream, et ~3x transitoirement après un roulement) plus ~2,3 Go de système. Le disque est la SEULE des trois ressources de la VM que rien ne rend — l'éviction laisse le fichier de l'app évincée en place — donc cette courbe ne fait que monter, et un volume plein c'est SQLITE_FULL sur les écritures de toutes les orgs à la fois. ⚠ Changer cette valeur ROULE l'instance (nouvelle version du modèle de lancement, ~60 s sans Data API pour toutes les orgs) — c'est aussi ce qui applique la nouvelle taille. Rien à faire sur la machine : cloud-init lance growpart et la racine est en XFS, donc partition et système de fichiers s'étendent au démarrage suivant."
     mandatory: false
     default: "30"
+  amiIdByCell:
+    description: "AMI PAR CELLULE, pour UNE procédure : rouler l'OS sans coupure. Format \"<cellule>=<ami-id>[,<cellule>=<ami-id>]\" (ex. \"0=ami-0abc…\") ; les cellules nommées prennent cette image, les autres gardent amiId / l'épingle. Défaut vide = toutes les cellules sur la même image. Pourquoi : un changement de gabarit de lancement roule SA cellule au déploiement qui le porte, et un amiId unique roulerait toutes les cellules d'un coup, bases à bord. Tenir une cellule sur l'ANCIENNE image pendant qu'une autre prend la nouvelle permet de la vider d'abord (POST /admin/drain-cell) puis de la rouler VIDE et hors de Cloud Map — personne ne le voit. Ce n'est PAS un moyen de faire tourner longtemps des images différentes : check:ami lit l'épingle, donc retirer la valeur une fois le roulement fini."
+    mandatory: false
+    default: ""
+  replicationLagAlarmSeconds:
+    description: "Seuil de l'alarme de retard de réplication, en secondes (défaut 300, minimum 30). Chaque cellule publie ReplicationLagMaxSeconds : le pire écart, parmi ses bases, entre maintenant et la dernière synchronisation litestream réussie (lue par `litestream list -json`, horloge de la VM seule). Une base inactive n'a PAS de retard — l'horodatage avance à chaque intervalle même sans écriture — et il se fige quand la réplique ne peut plus être écrite : c'est le cas que ni le battement (litestream tourne) ni les alarmes de capacité ne voient, et chaque écriture faite pendant ce temps serait perdue par un crash. L'alarme exige 3 points sur 5 ; le silence n'alarme pas (c'est le rôle du battement)."
+    mandatory: false
+    default: "300"
   amiId:
     description: "AMI of the database VM. Pinned by default to a specific AL2023 arm64 image of eu-west-1, so that an ordinary deploy NEVER replaces the instance (a replacement = ~60s with no Data API for every org). Bump the pin — in lib/hereya-aws-sqlite-data-stack.ts — or pass an id here to move the OS deliberately. 'latest' restores auto-resolution of the newest AL2023 arm64 image at every deploy (and with it the surprise replacement); outside eu-west-1, 'latest' or a region-local id is required."
     mandatory: false
