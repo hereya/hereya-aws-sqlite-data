@@ -246,6 +246,13 @@ its ack named the serving instance.
    from the boot restore's `existing`), whatever the gate concluded: the safety condition of
    that file, checked instead of assumed.
 
+**Tried for real** (`dilayadev-move-trial`, handover ON, 100 seeded apps,
+`scripts/acceptance/restart-under-write.mjs`): production's ack item planted verbatim for the
+serving instance, three apps written every 100 ms, `kill -9` of the process. Before the fix
+(same stack, same evening): `catchup-start apps:20 unknown:true`, `SQL_ERROR`, `catchup-failed`,
+acknowledged rows gone. After: **363 acknowledged writes, 0 lost**, journal `gate-skipped` and no
+`catchup-start`, API back 5.6 s after the kill.
+
 **Known and left as is:** a restarted process that is NOT a marked writer (a replacement that
 crashed while warming, or a clean `systemctl restart`, which releases the marker) still serves
 without replication for the ack wait + the short wait (~25 s) — the stale Cloud Map registration
