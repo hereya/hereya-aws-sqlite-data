@@ -27,6 +27,8 @@ const bucket = outputs.sqliteReplicaBucketName;
 const ddb = new DynamoDBClient({ region });
 const ORG = "scale-org"; // seeded by handover-scale.mjs: scale-000 … scale-099, table t(k, v), on cell 0
 const app = (n) => `scale-${String(n).padStart(3, "0")}`;
+// First app of the ten that get moved — a second run on the same stack needs ten apps still on cell 0.
+const FIRST = Number(process.env.MOVE_FIRST ?? 10);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let failures = 0;
@@ -103,7 +105,9 @@ function writer(appId, tag) {
   return state;
 }
 async function missing(appId, keys) {
-  const res = await query(appId, "SELECT k FROM t");
+  // Retried: one gateway 503 here would read as "every row lost".
+  let res = await query(appId, "SELECT k FROM t");
+  for (let i = 0; res.status !== 200 && i < 10; i++) { await sleep(1000); res = await query(appId, "SELECT k FROM t"); }
   if (res.status !== 200) return keys;
   const have = new Set(res.body.records.map((r) => r[0].stringValue));
   return keys.filter((k) => !have.has(k));
@@ -113,7 +117,7 @@ async function missing(appId, keys) {
 const bystanders = [90, 91, 92, 93, 94].map((n) => writer(app(n), "by"));
 const pauses = [];
 const gaps = [];
-for (let n = 10; n < 20; n++) {
+for (let n = FIRST; n < FIRST + 10; n++) {
   const w = writer(app(n), `m${n}`);
   await sleep(1500);
   const res = await move(app(n), "1");
@@ -126,21 +130,21 @@ for (let n = 10; n < 20; n++) {
   check(`${app(n)} moved to cell 1 under load: nothing refused by the service, every acknowledged write read back`, ok, `pause ${res.body?.pauseMs} ms, longest client silence ${w.maxGapMs} ms, acked ${w.acked.length}, lost ${lost.length}, errors ${JSON.stringify(w.errors)}, ${res.status} ${JSON.stringify(res.body)}`);
 }
 console.log(JSON.stringify({ pausesMs: pauses, clientGapsMs: gaps }));
-const r10 = await row(app(10));
+const r10 = await row(app(FIRST));
 check("the row is finalized: vmId=1, no phase left", r10?.vmId === "1" && r10.phase === null, JSON.stringify(r10));
-check("the file is on cell 1 and NOT under the org on cell 0", (await hasFile("1", app(10))) && !(await hasFile("0", app(10))));
+check("the file is on cell 1 and NOT under the org on cell 0", (await hasFile("1", app(FIRST))) && !(await hasFile("0", app(FIRST))));
 check("cell 0 set its copy aside under _moved/", Number(await ssm(cells["0"], ["ls /var/lib/dilaya/dbs/_moved | wc -l"])) >= 10);
-check("ONE litestream watches it: cell 1", (await watchers(app(10))).join() === "1");
+check("ONE litestream watches it: cell 1", (await watchers(app(FIRST))).join() === "1");
 
 // 2. and back — the target has a history with this app (a stale copy must never be served)
-const back = writer(app(10), "back");
+const back = writer(app(FIRST), "back");
 await sleep(1000);
-const resBack = await move(app(10), "0");
+const resBack = await move(app(FIRST), "0");
 await sleep(1000);
 back.stop = true;
 await back.done;
-check(`${app(10)} moved BACK to cell 0, nothing lost`, resBack.body?.status === "moved" && (await missing(app(10), back.acked)).length === 0, JSON.stringify(resBack.body));
-check("ONE litestream watches it: cell 0", (await watchers(app(10))).join() === "0");
+check(`${app(FIRST)} moved BACK to cell 0, nothing lost`, resBack.body?.status === "moved" && (await missing(app(FIRST), back.acked)).length === 0, JSON.stringify(resBack.body));
+check("ONE litestream watches it: cell 0", (await watchers(app(FIRST))).join() === "0");
 
 // 3. an open transaction: the move gives up, the transaction commits
 const tx = await timed(signedCall(api, "/tx/begin", { org_id: ORG, app_id: app(30) }, region));
@@ -152,16 +156,17 @@ check("… and the transaction commits", commit.status === 200);
 for (const b of bystanders) b.stop = true;
 await Promise.all(bystanders.map((b) => b.done));
 check("bystanders: the SERVICE refused them nothing", bystanders.every((b) => Object.keys(b.errors).every((k) => k.endsWith(":gateway"))), JSON.stringify(bystanders.map((b) => ({ acked: b.acked.length, errors: b.errors, maxGapMs: b.maxGapMs }))));
-check("S3 holds every row of a moved database (restore, no service involved)", (await rowsInS3(app(11))) === Number((await query(app(11), "SELECT count(*) FROM t")).body.records[0][0].longValue));
+check("S3 holds every row of a moved database (restore, no service involved)", (await rowsInS3(app(FIRST + 1))) === Number((await query(app(FIRST + 1), "SELECT count(*) FROM t")).body.records[0][0].longValue));
 
 if (extra === "crash") {
   for (const cell of ["0", "1"]) {
     await ssm(cells[cell], ["mkdir -p /etc/systemd/system/dilaya-data-api.service.d", "printf '[Service]\\nEnvironment=MOVE_CRASH_POINTS=on\\n' > /etc/systemd/system/dilaya-data-api.service.d/crash.conf", "systemctl daemon-reload && systemctl restart dilaya-data-api"]);
   }
-  await waitFor("both cells answer again", async () => (await query(app(0), "SELECT 1")).status === 200 && (await query(app(11), "SELECT 1")).status === 200, { timeoutMs: 180_000, intervalMs: 2000 });
+  await waitFor("both cells answer again", async () => (await query(app(0), "SELECT 1")).status === 200 && (await query(app(FIRST + 1), "SELECT 1")).status === 200, { timeoutMs: 180_000, intervalMs: 2000 });
   // [crash point, the cell that must hold the app afterwards]
   const points = [["after-begin", "0"], ["after-detach", "0"], ["after-a-stopped", "0"], ["after-ask", "1"], ["in-after-clear", "0"], ["in-after-claim", "1"], ["in-after-restore", "1"]];
-  let n = 40;
+  let n = Number(process.env.CRASH_FIRST ?? 40);
+  const crashFirst = n;
   for (const [point, expected] of points) {
     const appId = app(n++);
     const w = writer(appId, point);
@@ -177,8 +182,9 @@ if (extra === "crash") {
     const lost = await missing(appId, w.acked);
     const r = await row(appId);
     const holder = r === null ? "0" : r.phase === "b_started" ? r.targetVm : r.vmId;
-    await sleep(3000);
-    const seenBy = await watchers(appId);
+    // A restarted cell starts its daemon AFTER it is ready: give the listing its chance.
+    let seenBy = await watchers(appId);
+    for (let i = 0; seenBy.join() !== expected && i < 6; i++) { await sleep(5000); seenBy = await watchers(appId); }
     const inS3 = await rowsInS3(appId);
     const served = Number((await query(appId, "SELECT count(*) FROM t")).body?.records?.[0]?.[0]?.longValue);
     check(`crash ${point}: held by cell ${expected}, ONE writer, nothing acknowledged is lost`,
@@ -188,7 +194,7 @@ if (extra === "crash") {
   }
   await sleep(35_000); // one registry poll: the sweep must have settled every row
   const left = [];
-  for (let i = 40; i < n; i++) if ((await row(app(i)))?.phase) left.push(app(i));
+  for (let i = crashFirst; i < n; i++) if ((await row(app(i)))?.phase) left.push(app(i));
   check("no row is left mid-move once both cells have swept", left.length === 0, left.join());
 }
 
