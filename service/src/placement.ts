@@ -17,6 +17,11 @@
 //
 // **No row = the origin cell.** That is what lets this ship with no migration:
 // the partition is empty, so the origin cell owns everything, exactly as before.
+//
+// An ORG row (sk = "<orgId>", no slash) places every app of that org that has
+// no row of its own — how a NEW org lands on another cell while no VM may write
+// here yet (t_dbmove_p3_relay_cells). ⚠️ Only for an org with no database yet:
+// a row is a statement of where the file IS, it moves nothing.
 import { DynamoDBClient, QueryCommand, type AttributeValue } from "@aws-sdk/client-dynamodb";
 import { ServiceError } from "./errors.ts";
 import type { AppRef, Registry, RegistryStatus } from "./registry.ts";
@@ -45,6 +50,8 @@ export function placementKey(orgId: string, appId: string): string {
  */
 export interface Placement {
   readonly cellId: string;
+  /** The cell that holds the app: its own row, else its org's, else the origin. */
+  holderOf(orgId: string, appId: string): Promise<string>;
   isMine(orgId: string, appId: string): Promise<boolean>;
   filterMine(refs: AppRef[]): Promise<AppRef[]>;
   /** Drop the cache: the next answer is read from the store. */
@@ -83,26 +90,34 @@ export class DdbPlacement implements Placement {
     this.now = opts.now ?? Date.now;
   }
 
+  async holderOf(orgId: string, appId: string): Promise<string> {
+    const holder = this.holder(await this.load(), orgId, appId);
+    if (holder === null) {
+      throw new ServiceError("UNAVAILABLE", `placement row for ${placementKey(orgId, appId)} has no vmId`);
+    }
+    return holder;
+  }
+
   async isMine(orgId: string, appId: string): Promise<boolean> {
-    const owners = await this.load();
-    const key = placementKey(orgId, appId);
-    if (owners.get(key) === null) throw new ServiceError("UNAVAILABLE", `placement row ${key} has no vmId`);
-    return this.owns(owners, key);
+    return (await this.holderOf(orgId, appId)) === this.cellId;
   }
 
   async filterMine(refs: AppRef[]): Promise<AppRef[]> {
     const owners = await this.load();
-    return refs.filter((ref) => this.owns(owners, placementKey(ref.orgId, ref.appId)));
+    return refs.filter((ref) => this.holder(owners, ref.orgId, ref.appId) === this.cellId);
   }
 
   reload(): void {
     this.owners = null;
   }
 
-  private owns(owners: Map<string, string | null>, key: string): boolean {
+  private holder(owners: Map<string, string | null>, orgId: string, appId: string): string | null {
     // `has`, not `??`: an ownerless row is stored as null, and null must not
-    // fall through to the origin.
-    return (owners.has(key) ? owners.get(key) : ORIGIN_CELL) === this.cellId;
+    // fall through to the org's row or to the origin.
+    for (const key of [placementKey(orgId, appId), orgId]) {
+      if (owners.has(key)) return owners.get(key) ?? null;
+    }
+    return ORIGIN_CELL;
   }
 
   private load(): Promise<Map<string, string | null>> {
@@ -177,6 +192,15 @@ export class PlacedRegistry implements Registry {
 
   heldHere(orgId: string, appId: string): Promise<boolean> {
     return this.placement.isMine(orgId, appId);
+  }
+
+  holderOf(orgId: string, appId: string): Promise<string> {
+    return this.placement.holderOf(orgId, appId);
+  }
+
+  /** Placement only — what a relay re-reads on a peer's 421, without paying a registry Scan. */
+  reloadPlacement(): void {
+    this.placement.reload();
   }
 
   async listActive(): Promise<AppRef[]> {

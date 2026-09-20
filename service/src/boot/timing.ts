@@ -18,6 +18,7 @@
 // It is an INSTRUMENT, never a gate: every failure here is swallowed. A boot
 // that cannot publish its own timing is still a boot.
 import { CloudWatchClient, PutMetricDataCommand, type MetricDatum } from "@aws-sdk/client-cloudwatch";
+import { metricDimensions, type Dimension } from "../metric-dimensions.ts";
 import { readFileSync } from "node:fs";
 import type { Config } from "../config.ts";
 
@@ -79,13 +80,10 @@ export class BootTimer {
   }
 }
 
-function toMetricData(report: BootPhase[], stack: string): MetricDatum[] {
+function toMetricData(report: BootPhase[], dimensions: Dimension[]): MetricDatum[] {
   return report.map(({ phase, seconds }) => ({
     MetricName: METRIC_BOOT_SECONDS,
-    Dimensions: [
-      { Name: "stack", Value: stack },
-      { Name: "phase", Value: phase },
-    ],
+    Dimensions: [...dimensions, { Name: "phase", Value: phase }],
     Unit: "Seconds" as const,
     Value: seconds,
   }));
@@ -110,7 +108,7 @@ export async function publishBootTiming(
     await client.send(
       new PutMetricDataCommand({
         Namespace: METRIC_NAMESPACE,
-        MetricData: toMetricData(report, cfg.heartbeatDimension),
+        MetricData: toMetricData(report, metricDimensions(cfg)),
       }),
     );
   } catch (err) {

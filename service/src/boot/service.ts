@@ -3,7 +3,6 @@
 // Any restore failure aborts the boot — never serve partially restored.
 import type { Config } from "../config.ts";
 import { AppManager, appKeyOf } from "../apps.ts";
-import { CloudMapRegistration } from "../cloudmap.ts";
 import { Heartbeat } from "../heartbeat.ts";
 import { Limiter } from "../limits.ts";
 import { Litestream } from "../litestream.ts";
@@ -16,6 +15,7 @@ import { TxRegistry } from "../tx.ts";
 import { assertVecLoadable } from "../vec.ts";
 import { resolveWorkerPath, WorkerPool } from "../worker-host.ts";
 import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { createCells } from "./cells.ts";
 import { createHandoverClient, createOrgQuotaReader, createRegistry } from "./deps.ts";
 import { logDiskVolume } from "./disk-log.ts";
 import { startEvictionSweep, startRegistryPoller, startTxSweeper } from "./loops.ts";
@@ -79,13 +79,13 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   // fleet, and a write landing inside it is exactly the one our copy misses.
   // Announcing after the restore would leave those writes outside the
   // catch-up list AND outside our copy — stale data, silently.
-  let handoverForShutdown: { client: DynamoDBClient; tableName: string; instanceId: string } | null = null;
+  let handoverForShutdown: { client: DynamoDBClient; tableName: string; instanceId: string; cellId: string } | null = null;
   let handoverBaseline: HandoverRecord | null = null;
   let announcedAtMs = 0;
   const handoverClient = cfg.handoverEnabled ? createHandoverClient(cfg) : null;
   if (handoverClient !== null) {
     const instanceId = (await readInstanceId()) ?? "";
-    handoverForShutdown = { client: handoverClient, tableName: cfg.registryTable, instanceId };
+    handoverForShutdown = { client: handoverClient, tableName: cfg.registryTable, instanceId, cellId: cfg.cellId };
     handoverBaseline = await announceWarming(handoverForShutdown, { instanceId });
     announcedAtMs = Date.now();
   }
@@ -96,6 +96,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   // 4. bind the HTTP API
   let shutdownRef: Shutdown | null = null;
+  const cells = createCells(cfg);
   const server = buildServer({
     cfg,
     registry,
@@ -103,6 +104,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     txRegistry,
     limiter,
     quota,
+    ...(cells.relay ? { relay: cells.relay } : {}),
     ensureServed: (orgId, appId) => sync.ensureServed(orgId, appId),
     recordWrite: (orgId, appId, changed) => writeStats.record(orgId, appId, changed),
     onAdminSync: () => sync.syncOnce(),
@@ -153,18 +155,9 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   litestream.start(servedAtBoot);
   bootTimer.mark("litestream");
 
-  // 6. announce ourselves to the API Gateway path (Cloud Map), only once the
-  // API is actually able to answer
-  let cloudMap: CloudMapRegistration | null = null;
-  if (cfg.cloudMapServiceId) {
-    cloudMap = new CloudMapRegistration({
-      serviceId: cfg.cloudMapServiceId,
-      region: cfg.awsRegion,
-      port,
-      cellId: cfg.cellId,
-    });
-    await cloudMap.register();
-  }
+  // 6. announce ourselves to the API Gateway path (Cloud Map) and to the other
+  // cells (`_vms`), only once the API is actually able to answer
+  const { cloudMap, peerWatch } = await cells.join(port);
   // The boot ENDS here: until this registration lands, API Gateway has no
   // target and every request is a 500 (see the connector's dataapi-retry.ts).
   bootTimer.mark("register");
@@ -188,7 +181,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   logDiskVolume(cfg.dbDir);
 
-  const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry, cloudMap, watcher, writeStats, handover: handoverForShutdown });
+  const shutdown = new Shutdown({ cfg, server, manager, sync, litestream, txRegistry, cloudMap, peerWatch, watcher, writeStats, handover: handoverForShutdown });
   shutdownRef = shutdown;
   if (opts.installSignalHandlers !== false) shutdown.install();
 
@@ -207,6 +200,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
       watcher?.stop();
       if (evictionSweep) clearInterval(evictionSweep);
       heartbeat.stop();
+      await peerWatch?.retire();
       // Flush before dying: a clean stop should not throw away the interval's worth
       // of history it is holding.
       writeStats.stop();

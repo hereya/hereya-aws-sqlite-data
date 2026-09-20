@@ -6,7 +6,8 @@ import type { Config } from "../src/config.ts";
 import { AppManager } from "../src/apps.ts";
 import { Limiter } from "../src/limits.ts";
 import { DbQuotaGuard, StaticOrgQuotaReader } from "../src/quota.ts";
-import { FileRegistry } from "../src/registry.ts";
+import { FileRegistry, type Registry } from "../src/registry.ts";
+import type { Relay } from "../src/relay.ts";
 import { buildServer } from "../src/server.ts";
 import { TxRegistry } from "../src/tx.ts";
 import { resolveWorkerPath, WorkerPool } from "../src/worker-host.ts";
@@ -33,6 +34,11 @@ export interface TestServiceOptions {
   /** Clock for the usage-measurement cache, so a test can jump past its TTL
    *  instead of sleeping through it. */
   quotaNow?: () => number;
+  /** Placement over the file registry, and the relay towards the other cells
+   *  (relay.test.ts). Omitted = one cell that holds everything. */
+  wrapRegistry?: (inner: Registry) => Registry;
+  relay?: Relay;
+  onDeleteApp?: (orgId: string, appId: string) => Promise<void>;
 }
 
 export async function startTestService(
@@ -95,7 +101,8 @@ export async function startTestService(
     ...overrides,
   };
 
-  const registry = new FileRegistry(cfg.registryFile);
+  const fileRegistry = new FileRegistry(cfg.registryFile);
+  const registry = opts.wrapRegistry ? opts.wrapRegistry(fileRegistry) : fileRegistry;
   const txRegistry = new TxRegistry({ idleMs: cfg.txIdleMs, maxMs: cfg.txMaxMs });
   const pool = new WorkerPool({
     maxLiveWorkers: cfg.maxLiveWorkers,
@@ -113,7 +120,7 @@ export async function startTestService(
           reader: new StaticOrgQuotaReader(opts.quotaCaps),
           now: opts.quotaNow,
         });
-  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter, quota });
+  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter, quota, relay: opts.relay, onDeleteApp: opts.onDeleteApp });
 
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
