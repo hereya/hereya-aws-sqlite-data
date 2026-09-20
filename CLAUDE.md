@@ -263,6 +263,53 @@ Deliberately NOT here, moved to phase 3 where two real cells can test them: per-
 record keys, per-cell heartbeat/metric dimensions and alarms, the `_vms` partition and its grant.
 With one cell each of them would be code no test and no trial could exercise.
 
+## N cells, one gateway: the VM→VM relay (2026-09-20, `t_dbmove_p3_relay_cells`)
+
+Phase 3. `vmCount` (default **1** = the stack exactly as it was) adds cells. A cell owns what the
+single-writer invariant is scoped by — its ASG, its launch hook, its `CELL_ID`, its four alarms —
+and SHARES everything a client can see: one gateway, one Cloud Map service, one SG, one role, one
+table, one bucket. **The 5 Data API clients, the app Lambdas' IAM and env do not change.**
+
+- **The relay** (`service/src/relay.ts`, `server/relay-out.ts`). The gateway knows nothing about
+  apps, so a request lands on any cell. The gate's `MISPLACED` is caught in `build.ts` and the
+  request is forwarded — method, path, body, capability header — to the holder on the private
+  network; the answer goes back **verbatim**. The capability gate runs BEFORE, on both cells.
+  Two rules carry the safety:
+  1. **A relayed request is never relayed again** (`x-dilaya-relayed`). A cell that does not hold
+     it answers 421 to the peer. Diverging caches cost one hop, never a loop. Before answering 421
+     to a peer a cell RE-READS placement, so that a 421 between VMs always means "as of now" — the
+     relaying cell then re-reads its own and tries once more.
+  2. **What the client is told must be true of what ran**, because its retry policy acts on it
+     (`dilaya-connector/src/dataapi-retry.ts` replays a write on 503). `UNAVAILABLE` (503) only
+     when the TCP connection was **never established** — judged from the socket's `connect`
+     event, not from an error-code list: a dead instance sends no RST, it just never answers
+     the SYN (2 s connect timeout). Anything after the connect may have run → `INTERNAL` (500
+     with a code), which no client replays.
+- **`_vms`** (`vms.ts`): `sk = <cellId>/<instanceId>` → `{ip, port, state, beat, atMs}`, written
+  by each instance when it enters Cloud Map, `retired` at drain step 0. Grant: `PutItem` +
+  `DeleteItem` conditioned on `LeadingKeys = _vms`. **The announcement is never fatal**: with one
+  cell nobody reads the row, and aborting a boot over it would be a total outage.
+- **Peer watch** (`peer-watch.ts`, 20 s). A crashed instance never deregisters, and with N cells
+  1/N of ALL traffic would hit its address until its replacement boots. A peer evicts it from
+  Cloud Map once its `beat` counter has stood still for 3 of the WATCHER's own ticks — **no clock
+  of another machine is read**, and a tick the watcher could not read counts for nothing. A wrong
+  eviction heals itself: the victim finds `evicted` on its row and registers again; meanwhile it
+  stayed reachable through the relay.
+- **Placing a NEW org**: an ORG row `_placement / sk=<orgId>` → `vmId`. Resolution: the app's
+  row, else its org's, else the origin. Read-only for the VMs (the write grant on `_placement`
+  comes with phase 4). ⚠️ **Only for an org with no database yet**: a row says where the file IS,
+  it moves nothing. `/admin/delete-app` and `/stats` follow placement too (`assertHeldHere` — the
+  delete route has no `authorize()`, and "deleted" from a cell that never had the file would
+  leave the real one behind).
+- **Per cell, with the origin unchanged**: handover keys (`handover/keys.ts`: `current#1`…; the
+  origin keeps the bare keys — the roll that ships this has an old instance on one side) and
+  metric dimensions (`metric-dimensions.ts`: `{stack, cell}`; the origin keeps `{stack}`, because a
+  new dimension set is a NEW metric and would orphan every alarm for the length of a roll).
+- ⚠️ **Lowering `vmCount` destroys the cells above it.** Their data survives in S3 but nothing
+  re-places it: empty a cell before removing it (phase 4/5 tooling).
+- `/admin/sync` reaches ONE cell. Harmless: `ensureServed` hot-adds on the first request and the
+  30 s poll covers the rest.
+
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 
 Every section below that says "bounce" describes what a config change USED to cost: the config
