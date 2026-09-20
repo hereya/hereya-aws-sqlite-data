@@ -70,6 +70,7 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 | `POST /tx/begin\|commit\|rollback` | `{org_id, app_id, transactionId?}` | tx ids are pair-scoped; idle 15s / max 60s |
 | `POST /admin/sync` | `{}` | reconcile served apps against the registry now |
 | `POST /admin/delete-app` | `{org_id, app_id}` | tears down the app's local db (close executor, drop from litestream, delete local file); **S3 replica retained**; used by the connector's `drop-schema` |
+| `POST /admin/move-app` | `{org_id, app_id, to_cell, force?}` | moves ONE app's database to another cell, live (see CLAUDE.md "Moving one database"). Answers `{status: "moved"\|"resumed", fromCell, toCell, version, pauseMs, reason?}`; **409 `MOVE_ABORTED`** when nothing was changed (open transaction, database above `MOVE_MAX_BYTES` without `force`). Any cell may be asked: the relay carries it to the holder |
 | `GET /stats?org_id&app_id` | – | `{dbSizeBytes}` (db + WAL on disk); used by the connector's `get-usage-report` |
 | `GET /health` | – | status, apps, litestream up/down, vec (sqlite-vec version) |
 

@@ -14,6 +14,15 @@ export interface RelayContext {
 
 export type RelayOut = (req: IncomingMessage, ctx: RelayContext) => Promise<(RelayedResponse & { toCell: string }) | null>;
 
+/**
+ * The re-read says WE hold the app now: it arrived here while the request was
+ * parked on the cell it was leaving (move/). Nothing ran anywhere — a 421 is
+ * answered before any statement — so the request is simply served here. Found
+ * by the two-cell trial: answering 503 instead cost 6 of 10 moves a visible
+ * error for whoever entered through the target cell.
+ */
+export class ServeHere extends Error {}
+
 export function isRelayed(req: IncomingMessage): boolean {
   return req.headers[RELAY_HEADER] !== undefined;
 }
@@ -41,7 +50,8 @@ export function createRelayOut(deps: ServerDeps): RelayOut {
     // Nothing ran anywhere: a 421 is answered before any statement.
     registry.reloadPlacement?.();
     const again = await registry.holderOf(ctx.orgId, ctx.appId);
-    if (again === cfg.cellId || again === toCell) {
+    if (again === cfg.cellId) throw new ServeHere();
+    if (again === toCell) {
       throw new ServiceError("UNAVAILABLE", "placement changed while the request was in flight; retry shortly");
     }
     const second = await relay.forward(again, out);

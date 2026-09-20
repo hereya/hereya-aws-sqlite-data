@@ -11,6 +11,7 @@ export type ErrorCode =
   | "TX_NOT_FOUND"
   | "TX_EXPIRED"
   | "MISPLACED"
+  | "MOVE_ABORTED"
   | "UNAVAILABLE"
   | "INTERNAL";
 
@@ -32,6 +33,10 @@ const STATUS: Record<ErrorCode, number> = {
   // Active, but held by another cell (placement.ts). 421 Misdirected Request:
   // nothing ran here, and nothing may — this cell must not even restore it.
   MISPLACED: 421,
+  // A database move gave up BEFORE anything changed hands (open transaction,
+  // statements that would not drain, an unobserved litestream stop). The app
+  // is exactly where and how it was.
+  MOVE_ABORTED: 409,
   UNAVAILABLE: 503,
   INTERNAL: 500,
 };

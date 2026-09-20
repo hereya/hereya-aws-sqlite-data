@@ -108,6 +108,22 @@ test("the vm directory grant reaches the `_vms` partition and nothing else", () 
   assert.doesNotMatch(statement, /UpdateItem|BatchWrite|dynamodb:\*/);
 });
 
+test("the move grant is conditional writes on `_placement` and nothing else; the gateway routes move-app, never move-in", () => {
+  const template = buildTemplate();
+  const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap(
+    (policy) => (policy as { Properties: { PolicyDocument: { Statement: Array<{ Sid?: string }> } } }).Properties.PolicyDocument.Statement,
+  );
+  const found = statements.find((st) => st.Sid === "PlacementMoves");
+  const statement = found && JSON.stringify(found);
+  assert.ok(statement, "PlacementMoves statement not found");
+  assert.match(statement, /"dynamodb:LeadingKeys":\["_placement"\]/);
+  assert.match(statement, /"Action":"dynamodb:UpdateItem"/);
+  assert.doesNotMatch(statement, /PutItem|DeleteItem|BatchWrite|dynamodb:\*/);
+  const routes = Object.values(template.findResources("AWS::ApiGatewayV2::Route")).map((r) => (r as { Properties: { RouteKey: string } }).Properties.RouteKey);
+  assert.ok(routes.includes("POST /admin/move-app"));
+  assert.ok(!routes.some((r) => r.includes("move-in")));
+});
+
 test("a vmCount that is not a whole number of cells is refused at synth", () => {
   for (const bad of ["0", "2.5", "many", "9"]) {
     assert.throws(() => withEnv({ vmCount: bad }, buildTemplate), /invalid vmCount/);

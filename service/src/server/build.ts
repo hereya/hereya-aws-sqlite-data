@@ -5,7 +5,8 @@ import type { ServerDeps } from "./deps.ts";
 import { createGate } from "./gate.ts";
 import { createHandlers } from "./handlers.ts";
 import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, readBody, send, sendRaw } from "./http.ts";
-import { createRelayOut, isRelayed } from "./relay-out.ts";
+import { parseMoveApp, parseMoveIn } from "./move-routes.ts";
+import { createRelayOut, isRelayed, ServeHere } from "./relay-out.ts";
 
 export function buildServer(deps: ServerDeps): Server {
   const { cfg, registry, manager, txRegistry } = deps;
@@ -18,7 +19,7 @@ export function buildServer(deps: ServerDeps): Server {
   );
 
   return createServer((req, res) => {
-    void route(req, res);
+    void handle(req, res);
   });
 
   /**
@@ -31,7 +32,7 @@ export function buildServer(deps: ServerDeps): Server {
     if (!(await registry.heldHere(orgId, appId))) registry.reloadPlacement?.();
   }
 
-  async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function handle(req: IncomingMessage, res: ServerResponse, again?: { body: unknown }): Promise<void> {
     const started = Date.now();
     const url = new URL(req.url ?? "/", "http://localhost");
     const route = `${req.method} ${url.pathname}`;
@@ -67,7 +68,7 @@ export function buildServer(deps: ServerDeps): Server {
       if (req.method !== "POST") {
         throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
       }
-      body = await readBody(req, cfg.maxRequestBytes);
+      body = again ? again.body : await readBody(req, cfg.maxRequestBytes);
       if (typeof body === "object" && body !== null) {
         orgId = (body as Record<string, unknown>).org_id as string | undefined;
         appId = (body as Record<string, unknown>).app_id as string | undefined;
@@ -125,6 +126,22 @@ export function buildServer(deps: ServerDeps): Server {
           payload = { status: "deleted", note: "local file removed; S3 replica retained" };
           break;
         }
+        case "/admin/move-app": {
+          if (!deps.moves) throw new ServiceError("BAD_REQUEST", "database moves are not available");
+          const q = parseMoveApp(body);
+          // Only the holder can move it out: anywhere else this is a MISPLACED,
+          // which the catch below relays to the holder like any other request.
+          await assertHeldHere(q.orgId, q.appId);
+          payload = await deps.moves.out.moveOut(q);
+          break;
+        }
+        case "/admin/move-in": {
+          // Cell to cell only: it is not a gateway route, and a caller that is
+          // not a peer has no business claiming a database for this cell.
+          if (!deps.moves || !isRelayed(req)) throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
+          payload = await deps.moves.in.moveIn(parseMoveIn(body));
+          break;
+        }
         default:
           throw new ServiceError("BAD_REQUEST", `unknown route: ${route}`);
       }
@@ -142,6 +159,8 @@ export function buildServer(deps: ServerDeps): Server {
             return;
           }
         } catch (relayErr) {
+          // Once: a second ServeHere would mean placement flapping, and is a 500.
+          if (relayErr instanceof ServeHere && !again) return handle(req, res, { body });
           err = relayErr;
           svcErr = toServiceError(relayErr);
         }

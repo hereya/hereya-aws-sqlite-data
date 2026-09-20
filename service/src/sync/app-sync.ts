@@ -3,6 +3,7 @@ import type { EvictionPlan, InjectedEvictionProbe } from "../eviction.ts";
 import type { Litestream, LitestreamApp } from "../litestream.ts";
 import type { Registry } from "../registry.ts";
 import { bootRestoreAll } from "./boot-restore.ts";
+import { clearForArrival, detach, forget, markDeparting, reattach } from "./depart.ts";
 import { ensureServed } from "./ensure-served.ts";
 import { evictIdle } from "./evict.ts";
 import { doSync, removeApp } from "./reconcile.ts";
@@ -69,6 +70,21 @@ export class AppSync {
   async ensureServed(orgId: string, appId: string): Promise<void> {
     return ensureServed(this.state, orgId, appId);
   }
+
+  /** A promotion of this app is in flight — a mover drains it like a statement. */
+  isPending(orgId: string, appId: string): boolean {
+    return this.state.pending.has(`${orgId}/${appId}`);
+  }
+
+  /** The four things a database move asks of the served set. See ./depart.ts. */
+  readonly move = {
+    isPending: (orgId: string, appId: string): boolean => this.isPending(orgId, appId),
+    markDeparting: (orgId: string, appId: string): void => markDeparting(this.state, orgId, appId),
+    detach: (orgId: string, appId: string): Promise<void> => detach(this.state, orgId, appId),
+    reattach: (orgId: string, appId: string): Promise<void> => reattach(this.state, orgId, appId),
+    forget: (orgId: string, appId: string): void => forget(this.state, orgId, appId),
+    clearForArrival: (orgId: string, appId: string): Promise<void> => clearForArrival(this.state, orgId, appId),
+  };
 
   /** Drop every app quiet for `thresholdMs` from the config. See ./evict.ts. */
   async evictIdle(probe: InjectedEvictionProbe, thresholdMs: number): Promise<EvictionPlan> {

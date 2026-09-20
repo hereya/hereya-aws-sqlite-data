@@ -1,3 +1,4 @@
+import { appKeyOf } from "../apps.ts";
 import { verifyCapability } from "../capability.ts";
 import { ServiceError } from "../errors.ts";
 import type { Authorize, ServerDeps } from "./deps.ts";
@@ -62,7 +63,18 @@ export function createGate(deps: ServerDeps): Gate {
     // Active, but another cell holds it: refuse BEFORE ensureServed. Restoring
     // it here would create a local copy and start a second litestream writer
     // on the holder's replica path — the one thing placement exists to prevent.
-    await assertHeldHere(orgId, appId);
+    //
+    // A MOVE parks the app here, before placement is read: what waited out a
+    // hold must see the placement the move LEFT, not the one it found. And the
+    // re-check after the read is synchronous with `ensureServed` below, so a
+    // promotion can only ever start while no hold exists — the mover sees it
+    // in `pending` and drains it (move/mover.ts).
+    const appKey = appKeyOf(orgId, appId);
+    do {
+      await deps.limiter.whileHeld(appKey);
+      await assertHeldHere(orgId, appId);
+    } while (deps.limiter.isHeld(appKey));
+    deps.limiter.assertOpen(appKey);
     // Registry says active: make sure the local db is restored before any
     // worker can create an empty file that would shadow the S3 replica.
     if (deps.ensureServed) await deps.ensureServed(orgId, appId);

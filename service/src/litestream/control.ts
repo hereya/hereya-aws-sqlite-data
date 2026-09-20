@@ -67,6 +67,16 @@ export class ControlSocket {
     await this.run("unregister", [], app.dbPath);
   }
 
+  /**
+   * What a MOVE needs and a removal does not: the replica provably holds every
+   * frame before the database is stopped. `stop` already waits for a final
+   * sync; `sync -wait` first makes that a fact we asked for, not one we infer.
+   */
+  async handOff(app: LitestreamApp): Promise<void> {
+    await this.run("sync", ["-wait"], app.dbPath);
+    await this.remove(app);
+  }
+
   private run(command: string, options: string[], dbPath: string): Promise<void> {
     const args = [command, ...options, "-timeout", String(COMMAND_TIMEOUT_S), "-socket", this.path, dbPath];
     return new Promise<void>((resolve, reject) => {

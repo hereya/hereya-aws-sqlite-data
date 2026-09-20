@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "./config.ts";
+import { buildLitestreamConfig } from "./litestream/config-file.ts";
 import { ControlSocket, diffWatched, pooled } from "./litestream/control.ts";
 import { Restorer } from "./litestream/restore.ts";
 
@@ -50,40 +51,7 @@ export class Litestream {
   }
 
   buildConfig(apps: LitestreamApp[]): string {
-    const interval = `${this.cfg.litestreamSyncIntervalMs}ms`;
-    // 0.5.x schema: snapshots are configured globally (per-db values must not
-    // conflict anyway), and each db takes a single `replica:` — the legacy
-    // replica-level `retention:`/`snapshot-interval:` keys are silently
-    // IGNORED by 0.5.x (config parsing is non-strict), so keeping them would
-    // shrink the restore window to the 24h defaults without any error.
-    // Housekeeping cadences are declared explicitly rather than left to the
-    // built-in defaults: they are fixed per-database timers that LIST the
-    // replica on every tick regardless of whether the database was written to,
-    // and they — not the writes — are what the S3 request bill is made of.
-    // They do NOT affect the loss window (that is `sync-interval`, per-replica
-    // below); slowing them only delays the merge of L0 files, i.e. costs
-    // restore speed.
-    const lines: string[] = [
-      `l0-retention: ${this.cfg.litestreamL0Retention}`,
-      `l0-retention-check-interval: ${this.cfg.litestreamL0RetentionCheckInterval}`,
-      "levels:",
-      ...this.cfg.litestreamLevelIntervals.map((i) => `  - interval: ${i}`),
-      "snapshot:",
-      `  interval: ${this.cfg.litestreamSnapshotInterval}`,
-      `  retention: ${this.cfg.litestreamRetention}`,
-    ];
-    if (this.cfg.litestreamSocketPath) {
-      lines.push("socket:", "  enabled: true", `  path: ${this.cfg.litestreamSocketPath}`);
-    }
-    lines.push("dbs:");
-    for (const app of apps) {
-      lines.push(`  - path: ${app.dbPath}`);
-      lines.push(`    replica:`);
-      lines.push(`      url: ${this.replicaUrl(app)}`);
-      lines.push(`      sync-interval: ${interval}`);
-    }
-    if (apps.length === 0) lines.push("  []");
-    return lines.join("\n") + "\n";
+    return buildLitestreamConfig(this.cfg, apps, (app) => this.replicaUrl(app));
   }
 
   writeConfig(apps: LitestreamApp[]): void {
@@ -134,6 +102,24 @@ export class Litestream {
       log({ event: "socket-fallback", message: (err as Error).message });
       await this.bounce(apps);
     }
+  }
+
+  /**
+   * Let go of ONE database for a move: final sync, observed stop, unregister.
+   * Unlike `apply` there is NO bounce fallback — a bounce stops the database
+   * too, but nobody observes that its last frames reached the replica, and the
+   * target cell is about to restore from it. A failure here throws, the mover
+   * aborts, and `bounce` is how the caller converges afterwards.
+   * Returns false when the daemon was not watching it (nothing to hand off).
+   */
+  async detachOne(app: LitestreamApp, remaining: LitestreamApp[]): Promise<boolean> {
+    if (this.cfg.litestreamDisabled || !this.watched.has(app.dbPath)) return false;
+    if (!this.control || !this.child) throw new Error("no control socket: a move needs an observed per-database stop");
+    await this.control.ready();
+    await this.control.handOff(app);
+    this.writeConfig(remaining);
+    log({ event: "socket-detached", orgId: app.orgId, appId: app.appId });
+    return true;
   }
 
   /** The whole-process restart `apply` falls back to (~1s pause for every db). */

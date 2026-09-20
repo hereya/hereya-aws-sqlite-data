@@ -388,6 +388,105 @@ on the origin + 10 in an org placed on cell 1, destroyed the same hour —
   paid once per cell. The connector's retry covers it as before, but N cells do not make a roll
   cheaper for anyone; that is phase 5's job (drain a cell instead of rolling it).
 
+## Moving one database to another cell (2026-09-20, `t_dbmove_p4_move`)
+
+Phase 4. `POST /admin/move-app {org_id, app_id, to_cell, force?}` — asked of ANY cell (a cell that
+does not hold the app answers MISPLACED, and the relay carries it to the holder). Prod still has
+one cell: nothing can be moved there yet, and nothing production can observe changes.
+
+**The protocol, and who writes what** (`service/src/move/`):
+
+| step | who | what |
+|---|---|---|
+| `begin` → row `moving` | A (`mover.ts`) | intent; `version+1` = this move's id |
+| hold + drain | A | `Limiter.hold` parks new statements, `close("departing")`; waits for `inFlight = 0`, no promotion `pending`, no open tx — else ABORT |
+| detach | A (`sync/depart.ts`) | close the worker FIRST, then `litestream sync -wait` + `stop` + `unregister` — **observed, no bounce fallback** (`Litestream.detachOne`) |
+| row `a_stopped` | A | a REPORT of that fact, by the one that observed it |
+| `/admin/move-in` (cell to cell only, not a gateway route) | A → B | |
+| clear the local copy, then **claim** → row `b_started` | B (`arrival.ts`) | clear BEFORE claim; claim BEFORE restore |
+| `ensureServed` (restore from S3 + `register`) → `finalize` (`vmId=B`, `version+1`) | B | the ordinary hot-add path |
+| **read the row** → `moved` / `resumed` | A | set the files aside under `<dbDir>/_moved/` for `MOVE_KEEP_MS` (1 h), or re-replicate (a bounce) and reopen |
+
+**The safety rule is two conditional writes, not a convention** (`move/record.ts`): `cancel`
+(condition: phase ∈ {moving, a_stopped}) and `claim` (condition: phase = a_stopped AND targetVm =
+me) are on the same row, so exactly one wins. Before `b_started` a move can only go back to A;
+from `b_started` on it can only finish on B. **No timer decides** — a timer only decides to TRY.
+`placement.ts` reads `b_started` as "held by `targetVm`", so a replacement instance booting
+mid-move on either side agrees without anyone finishing the move first.
+
+Two rules on A, each with a test verified to fail first:
+
+1. **The outcome is READ, never assumed.** Whatever B answered — 200, 500, nothing — A decides
+   from a strongly consistent read of the row. A lost answer after B claimed is "moved".
+2. **Until the outcome is known the app is CLOSED on A** (503 = "nothing ran", which the
+   connector replays). The hold parks statements ≤ `MAX_HOLD_MS` (10 s); past it they are
+   REFUSED, not run — litestream has let go of the file, a statement that ran would be
+   acknowledged and lost. If the row cannot be read, the app stays closed: correct, nobody knows
+   who holds it.
+
+**Three traps found while writing it** (each pinned):
+
+- **A departing app STAYS in `served`.** `doSync` restores and REGISTERS any active app of the
+  cell that it does not find there — and until B claims, placement says the app is ours. Taking
+  it out of `served` hands it back to litestream at the next poll (`depart.test.ts`).
+- **The gate parks BEFORE `ensureServed`, and re-checks synchronously after reading placement**
+  (`server/gate.ts`): a promotion is the other path that registers a database. One that started
+  before the hold is visible in `pending`, and the mover drains it like a statement.
+- **B clears its local copy BEFORE the claim.** After the claim relayed statements arrive at
+  once, and `restoreIfMissing` keeps an "existing" file as is — a copy from an earlier stay
+  would be served as current data. It refuses when it SERVES the app (then the file is live).
+
+An open transaction lives in A's memory and cannot follow the file: it is waited for WITHOUT a
+hold (under one its COMMIT would park), then the move gives up with **409 `MOVE_ABORTED`**,
+nothing written. A database above `MOVE_MAX_BYTES` (64 MB) is refused unless `force`: B's
+restore would outlast the hold (measured in phase 0: ~1.3 s small, the 500 MB one far longer),
+and its statements would see 503s until B is ready. Pre-warming B in follow mode
+(`restore -f`, 7.9 s pause at 500 MB in phase 0) is NOT built.
+
+**Orphaned moves** (`move/sweep.ts`): at boot BEFORE the restore, then on each registry poll, a
+cell cancels its own moves that no live process drives (if B claimed first the write fails and
+the app is B's) and finalizes the ones it claimed. IAM: `PlacementMoves` = `UpdateItem` on
+`LeadingKeys = _placement`, nothing else — a conditional partial update is the whole API.
+
+⚠️ **Every cell must run ≥ 0.1.46 before any move**: an older B has no `/admin/move-in` (the
+move is cancelled — harmless), but an older cell reads `vmId` only and would not see
+`b_started`. ⚠️ A cell whose PROCESS restarted after an app left keeps that app's file on disk
+(unserved, unwatched, still counted by the org quota) until the instance is replaced or the app
+comes back; `clearForArrival` is what makes that harmless.
+
+**Tried for real** (trial stack `dilayadev-move-trial`, `vmCount=2`, 100 seeded apps, destroyed
+the same evening — `scripts/acceptance/move-trial.mjs <stack> crash`, **36/36** on the final run,
+handover ON, i.e. production's configuration):
+
+- **40 moves under load over four runs** (a writer every ~100 ms on the moved app, five bystanders
+  throughout): pause **1.2–1.5 s** server-side, longest client silence 1.3–1.7 s, **0 acknowledged
+  write lost**, bystanders' longest silence 0.5–0.8 s and nothing refused them by the service. The
+  role really may `UpdateItem` `_placement`; the target really continues the same replica path
+  (a restore from S3 that touches no service returns every row). Back again to the cell it left:
+  same — the stale copy is wiped before the claim.
+- **Two defects the first run found, neither visible to a test then** (both now pinned):
+  a statement that entered through the TARGET cell, was relayed to the source and parked there,
+  came back as a 421 once the app had arrived — and was answered **503** instead of served (6 of
+  10 moves showed the client one error; `ServeHere` in `relay-out.ts`); and the registry poll,
+  landing between B's claim and A's read, deleted the file the mover was about to set aside
+  (`doSync` now leaves a departing app alone).
+- **A SIGKILL at each of the 7 steps** (4 on A, 3 on B), writer running through it: every time ONE
+  cell holds the app, ONE litestream watches it, every acknowledged row is read back, S3 agrees
+  with what is served, and no row is left mid-move after one sweep. Before `b_started` the app
+  is back on A; from `b_started` on it is on B — including when the process that claimed it died
+  before restoring anything. The app is unreachable for the 16–21 s its crashed cell takes to
+  restart (that is crash recovery, not the move).
+- ⚠️ The first crash run LOST acknowledged writes — and the move was not the cause: the handover
+  was (see "A process RESTART is not a handover"). Re-run with the handover off: 7/7; then with
+  the fix and the handover on: 7/7.
+- What a client may see while a CELL dies mid-move: gateway 503s (no `error.code`), `503
+  UNAVAILABLE` (nothing ran — replayed by the connector), and at most one `500 INTERNAL` for the
+  statement that was on the wire to the dying cell (may have run — not replayed). By design.
+
+`MOVE_CRASH_POINTS=on` (set by NO stack; the trial adds a systemd drop-in) lets a request name
+a step at which the process SIGKILLs itself (`move/crash-points.ts`) — how "a crash at every
+step" is tried for real: `scripts/acceptance/move-trial.mjs <stack> crash`.
+
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 
 Every section below that says "bounce" describes what a config change USED to cost: the config

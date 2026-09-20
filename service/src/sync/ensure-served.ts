@@ -22,6 +22,11 @@ export async function ensureServed(state: SyncState, orgId: string, appId: strin
   // Durable half — a Map.set on the sink, flushed on a timer. Never awaited:
   // the read path must not gain an I/O failure mode. See `touchSink`.
   state.touchSink?.recordTouch(key, touchedAt);
+  // Being moved away: promoting it would put it back under OUR litestream
+  // while the target cell starts its own — the dual writer. 503 = nothing ran.
+  if (state.departing.has(key)) {
+    throw new ServiceError("UNAVAILABLE", "this app is being moved to another cell; retry shortly");
+  }
   // Served AND replicated: nothing to do — the overwhelmingly common path.
   if (state.served.has(key) && state.replicated.has(key)) return;
   const existing = state.pending.get(key);

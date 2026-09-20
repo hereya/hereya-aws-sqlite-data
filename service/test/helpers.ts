@@ -8,6 +8,7 @@ import { Limiter } from "../src/limits.ts";
 import { DbQuotaGuard, StaticOrgQuotaReader } from "../src/quota.ts";
 import { FileRegistry, type Registry } from "../src/registry.ts";
 import type { Relay } from "../src/relay.ts";
+import type { Moves } from "../src/server/move-routes.ts";
 import { buildServer } from "../src/server.ts";
 import { TxRegistry } from "../src/tx.ts";
 import { resolveWorkerPath, WorkerPool } from "../src/worker-host.ts";
@@ -39,6 +40,9 @@ export interface TestServiceOptions {
   wrapRegistry?: (inner: Registry) => Registry;
   relay?: Relay;
   onDeleteApp?: (orgId: string, appId: string) => Promise<void>;
+  /** Database moves, built from the service's own parts (move.test.ts). */
+  moves?: (parts: { cfg: Config; registry: Registry; manager: AppManager; limiter: Limiter; txRegistry: TxRegistry }) => Moves;
+  ensureServed?: (orgId: string, appId: string) => Promise<void>;
 }
 
 export async function startTestService(
@@ -56,6 +60,9 @@ export async function startTestService(
     registryFile,
     registryTable: "",
     cellId: "0",
+    moveDrainMs: 300,
+    moveMaxBytes: 64 * 1024 * 1024,
+    moveKeepMs: 3_600_000,
     awsRegion: "eu-west-1",
     sqlTimeoutMs: 1500,
     txOpTimeoutMs: 3000,
@@ -120,7 +127,8 @@ export async function startTestService(
           reader: new StaticOrgQuotaReader(opts.quotaCaps),
           now: opts.quotaNow,
         });
-  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter, quota, relay: opts.relay, onDeleteApp: opts.onDeleteApp });
+  const moves = opts.moves?.({ cfg, registry, manager, limiter, txRegistry });
+  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter, quota, relay: opts.relay, onDeleteApp: opts.onDeleteApp, moves, ensureServed: opts.ensureServed });
 
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();

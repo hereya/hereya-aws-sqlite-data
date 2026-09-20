@@ -139,6 +139,22 @@ export function createInstanceRole(stack: cdk.Stack, ctx: StackContext): void {
       },
     }),
   );
+  // Database moves (service/src/move/record.ts): the phases of a move are
+  // CONDITIONAL writes on the app's placement row, and the conditions are the
+  // safety rule — so it is UpdateItem, which carries a ConditionExpression on a
+  // partial update, and nothing else: no PutItem (it would overwrite a row
+  // whole, condition or not by mistake), no DeleteItem. Only the fixed
+  // `_placement` partition: this role still cannot write an org or app row.
+  role.addToPolicy(
+    new iam.PolicyStatement({
+      sid: "PlacementMoves",
+      actions: ["dynamodb:UpdateItem"],
+      resources: [table.tableArn],
+      conditions: {
+        "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["_placement"] },
+      },
+    }),
+  );
   // Describe* has no resource-level scoping in Auto Scaling; read-only.
   role.addToPolicy(
     new iam.PolicyStatement({
