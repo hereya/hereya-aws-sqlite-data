@@ -245,6 +245,20 @@ instead of an assumption welded into four places.
   expires on its own (≤ 10 s, `hold-expired`), and `release()` returns **false** when it had
   expired: what ran under it was not exclusive, the caller must abort. No caller yet (phase 4).
 
+- **A row without `vmId` costs ONE app, not the cell**: that app answers 503 and is held by
+  nobody (its replica stays in S3); everything else keeps serving. The first draft threw on the
+  whole read — one malformed row would then have aborted the BOOT of every org's databases.
+  Stored as `null`, and read with `has`, not `??`: `null ?? ORIGIN` quietly handed the app back
+  to the origin (caught by its test).
+
+**Tried for real** (trial stack `dilayadev-placement-trial`, 100 seeded apps, destroyed the same
+hour — `scripts/acceptance/placement-trial.mjs`, 8/8): the boot survives the consistent `Query`
+with the role as it is (100 apps restored in 13.6 s at 8-wide); Cloud Map accepts the custom
+attribute on the DNS-backed service, and the roll left ONE registration; a row placing an app on
+cell 1 → `/admin/sync` `{removed: 1}`, the app answers 421, its neighbour never notices; an
+ownerless row → that app 503, neighbour 200; row deleted → `{added: 1}`, restored from S3 with the
+write acknowledged before it left.
+
 Deliberately NOT here, moved to phase 3 where two real cells can test them: per-cell handover
 record keys, per-cell heartbeat/metric dimensions and alarms, the `_vms` partition and its grant.
 With one cell each of them would be code no test and no trial could exercise.
