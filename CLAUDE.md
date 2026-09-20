@@ -454,6 +454,35 @@ move is cancelled — harmless), but an older cell reads `vmId` only and would n
 (unserved, unwatched, still counted by the org quota) until the instance is replaced or the app
 comes back; `clearForArrival` is what makes that harmless.
 
+**Tried for real** (trial stack `dilayadev-move-trial`, `vmCount=2`, 100 seeded apps, destroyed
+the same evening — `scripts/acceptance/move-trial.mjs <stack> crash`, **36/36** on the final run,
+handover ON, i.e. production's configuration):
+
+- **40 moves under load over four runs** (a writer every ~100 ms on the moved app, five bystanders
+  throughout): pause **1.2–1.5 s** server-side, longest client silence 1.3–1.7 s, **0 acknowledged
+  write lost**, bystanders' longest silence 0.5–0.8 s and nothing refused them by the service. The
+  role really may `UpdateItem` `_placement`; the target really continues the same replica path
+  (a restore from S3 that touches no service returns every row). Back again to the cell it left:
+  same — the stale copy is wiped before the claim.
+- **Two defects the first run found, neither visible to a test then** (both now pinned):
+  a statement that entered through the TARGET cell, was relayed to the source and parked there,
+  came back as a 421 once the app had arrived — and was answered **503** instead of served (6 of
+  10 moves showed the client one error; `ServeHere` in `relay-out.ts`); and the registry poll,
+  landing between B's claim and A's read, deleted the file the mover was about to set aside
+  (`doSync` now leaves a departing app alone).
+- **A SIGKILL at each of the 7 steps** (4 on A, 3 on B), writer running through it: every time ONE
+  cell holds the app, ONE litestream watches it, every acknowledged row is read back, S3 agrees
+  with what is served, and no row is left mid-move after one sweep. Before `b_started` the app
+  is back on A; from `b_started` on it is on B — including when the process that claimed it died
+  before restoring anything. The app is unreachable for the 16–21 s its crashed cell takes to
+  restart (that is crash recovery, not the move).
+- ⚠️ The first crash run LOST acknowledged writes — and the move was not the cause: the handover
+  was (see "A process RESTART is not a handover"). Re-run with the handover off: 7/7; then with
+  the fix and the handover on: 7/7.
+- What a client may see while a CELL dies mid-move: gateway 503s (no `error.code`), `503
+  UNAVAILABLE` (nothing ran — replayed by the connector), and at most one `500 INTERNAL` for the
+  statement that was on the wire to the dying cell (may have run — not replayed). By design.
+
 `MOVE_CRASH_POINTS=on` (set by NO stack; the trial adds a systemd drop-in) lets a request name
 a step at which the process SIGKILLs itself (`move/crash-points.ts`) — how "a crash at every
 step" is tried for real: `scripts/acceptance/move-trial.mjs <stack> crash`.
