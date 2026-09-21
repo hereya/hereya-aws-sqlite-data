@@ -22,7 +22,7 @@ test("draining 100 served apps asks none of them for a checkpoint, and reaches l
     cfg: { drainMs: 0, litestreamSyncIntervalMs: 0, txOpTimeoutMs: 5000 } as Config,
     server: { close: () => steps.push("server.close") } as never,
     manager: {
-      workerFor: () => ({
+      withWorker: (_o: string, _a: string, fn: (w: unknown) => Promise<unknown>) => fn({
         control: async (action: string) => {
           controls.push(action);
           await new Promise((r) => setTimeout(r, 50));

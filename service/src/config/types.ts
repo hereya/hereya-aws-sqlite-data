@@ -10,6 +10,8 @@ export interface Config {
   maxInflightPerApp: number;
   maxInflightTotal: number;
   maxLiveWorkers: number;
+  /** How long a new app waits for a worker when none can be evicted; then 503. */
+  workerWaitMs?: number;
   txIdleMs: number;
   txMaxMs: number;
   maxResponseBytes: number;

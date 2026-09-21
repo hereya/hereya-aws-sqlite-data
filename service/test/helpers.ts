@@ -113,6 +113,7 @@ export async function startTestService(
   const txRegistry = new TxRegistry({ idleMs: cfg.txIdleMs, maxMs: cfg.txMaxMs });
   const pool = new WorkerPool({
     maxLiveWorkers: cfg.maxLiveWorkers,
+    waitForRoomMs: cfg.workerWaitMs,
     workerPath: resolveWorkerPath(),
     callbacks: { onTxInvalidated: (appKey) => txRegistry.deleteByAppKey(appKey) },
     canEvict: (appKey) => !txRegistry.hasOpenTx(appKey),

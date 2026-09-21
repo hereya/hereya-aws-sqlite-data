@@ -137,7 +137,7 @@ export class Shutdown {
       if (!this.txRegistry.hasOpenTx(appKey)) continue;
       this.txRegistry.deleteByAppKey(appKey);
       try {
-        await this.manager.workerFor(app.orgId, app.appId).control("rollback", this.cfg.txOpTimeoutMs);
+        await this.manager.withWorker(app.orgId, app.appId, (w) => w.control("rollback", this.cfg.txOpTimeoutMs));
       } catch {
         // worker may already be gone; WAL semantics roll it back regardless
       }

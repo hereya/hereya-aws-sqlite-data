@@ -567,9 +567,9 @@ destroyed the same night — `scripts/acceptance/drain-trial.mjs`):
   on a quiet night.
 - Background of that stack, before any drain: ~1 gateway-only 503 per 400–600 requests under
   concurrent load (`integrationLatency: 0`, no `error.code` — the connector replays those).
-- ⚠️ Found on the way, NOT a drain defect (`t_worker_evict_inflight_503`, proposed): 100 reads
-  in parallel on 100 apps → ~9 × `503 "app is shutting down"` — `MAX_LIVE_WORKERS` is 8 and the
-  pool evicts a worker that has a statement in flight.
+- ⚠️ Found on the way, NOT a drain defect (`t_worker_evict_inflight_503`, fixed in 0.1.48 — see
+  "A worker is only used under a LEASE"): 100 reads in parallel on 100 apps → ~9 × `503 "app is
+  shutting down"`.
 
 - **"stop" means stop**: an order lifted 4 s into a drain left 75 apps where they were, 26 moved,
   no row mid-move. (The second run's pass had moved all 86 queued apps AFTER the stop — a running
@@ -589,6 +589,39 @@ published by the heartbeat under the cell's dimensions, none breaching on silenc
 - `RelayedRequests` / `RelayFailures` per tick. Only the FAILURES are alarmed (> 20 in 5 min,
   twice): with N cells (N−1)/N of the traffic is relayed by design, so the rate is a fact about
   the gateway's spread, not a fault.
+
+## A worker is only used under a LEASE (2026-09-21, `t_worker_evict_inflight_503`)
+
+`MAX_LIVE_WORKERS` is 8 (a child process per app, on a 916 MB box) and prod holds 100 apps. The
+phase-5 trial found that 100 parallel reads on 100 apps got ~9 × `503 "app is shutting down"`.
+
+**The cause was not the one first written down** ("`canEvict` ignores statements in flight" — the
+pool did check `worker.busy`). `pool.get()` inserted the new worker and THEN looked for someone
+to evict: with every other worker busy, the only idle one in the map was the newcomer, whose
+caller had not reached `exec` yet. The pool closed the worker it was about to return.
+
+Now `WorkerPool.run(appKey, path, fn)` / `AppManager.withWorker` is the only way to a worker: a
+LEASE for the length of `fn`. A leased worker is never evicted; when nobody is evictable the
+newcomer WAITS for a lease to end (the live-process cap holds — the alternative, growing past
+it, is up to `MAX_INFLIGHT_TOTAL` = 64 node processes on that box). Past `WORKER_WAIT_MS`
+(10 s) it is refused `503 UNAVAILABLE` — true ("nothing ran"), replayed by the connector.
+
+Two orderings carry the transactions, each verified to fail first
+(`service/test/integration/server/worker-lease.test.ts`):
+
+1. **`/tx/begin` records the tx INSIDE the lease.** The lease's end wakes the waiting apps in the
+   same tick; with the registry still unaware of the tx they evicted the worker that had just run
+   BEGIN — the next statement then ran OUTSIDE any transaction (auto-committed) and the COMMIT
+   answered `no transaction is active`. Silent-loss shaped.
+2. **`/tx/commit|rollback` forgets the tx INSIDE the lease**, or the woken apps still find the
+   worker unevictable and sleep their whole wait.
+
+`batch-execute` holds ONE lease for all its parameter sets (the worker is idle between two).
+
+**Frequency in prod, measured before fixing** (gateway access log, 7 days to 2026-09-21, ~65 000
+requests): **0** such 503 on `POST /query`. It takes > 8 apps inside the same few milliseconds;
+the fleet's traffic has not done that yet. The 2 clients without a retry (frontend authorizer,
+OTP/passkey Lambda) are why it was fixed anyway.
 
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 
