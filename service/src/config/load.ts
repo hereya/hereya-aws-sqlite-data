@@ -63,6 +63,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxInflightPerApp: intEnv("MAX_INFLIGHT_PER_APP", 16),
     maxInflightTotal: intEnv("MAX_INFLIGHT_TOTAL", 64),
     maxLiveWorkers: intEnv("MAX_LIVE_WORKERS", 8),
+    workerWaitMs: intEnv("WORKER_WAIT_MS", 10_000),
     txIdleMs: intEnv("TX_IDLE_MS", 15_000),
     txMaxMs: intEnv("TX_MAX_MS", 60_000),
     maxResponseBytes: intEnv("MAX_RESPONSE_BYTES", 1_048_576),

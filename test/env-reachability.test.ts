@@ -52,6 +52,9 @@ const NOT_THE_STACK_S_JOB = new Set([
   // per-deployment knobs. Exposing one means deciding it should differ between
   // deployments, which none of these should.
   "DRAIN_MS",
+  // How long a new app waits for a worker when none can be evicted: bounded by
+  // the gateway's 30 s, not by anything a deployment knows.
+  "WORKER_WAIT_MS",
   // Database moves (service/src/move/): the drain wait, the size above which a
   // move must be forced, how long the cell an app left keeps its files.
   "MOVE_DRAIN_MS",

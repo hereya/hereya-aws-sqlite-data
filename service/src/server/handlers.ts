@@ -38,17 +38,18 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
       if (mode === "script" && q.params.length > 0) {
         throw new ServiceError("BAD_REQUEST", "parameters are not supported with multi-statement sql");
       }
-      const worker = manager.workerFor(q.orgId, q.appId);
-      const result = await worker.exec(
-        {
-          sql: q.sql,
-          binds: bindParams(q.params),
-          useTx,
-          mode,
-          includeMetadata: q.includeResultMetadata,
-          maxResponseBytes: cfg.maxResponseBytes,
-        },
-        cfg.sqlTimeoutMs,
+      const result = await manager.withWorker(q.orgId, q.appId, (worker) =>
+        worker.exec(
+          {
+            sql: q.sql,
+            binds: bindParams(q.params),
+            useTx,
+            mode,
+            includeMetadata: q.includeResultMetadata,
+            maxResponseBytes: cfg.maxResponseBytes,
+          },
+          cfg.sqlTimeoutMs,
+        ),
       );
       if (useTx) txRegistry.use(q.transactionId!, appKey); // refresh idle deadline after a long statement
       // "changed the database" is the same definition litestream reacts to —
@@ -72,24 +73,27 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     await limiter.admit(appKey);
     try {
       const useTx = q.transactionId !== undefined;
-      const worker = manager.workerFor(q.orgId, q.appId);
       const updateResults: Array<{ numberOfRecordsUpdated: number }> = [];
-      for (const params of q.parameterSets) {
-        if (useTx) txRegistry.use(q.transactionId!, appKey);
-        const result = await worker.exec(
-          {
-            sql: q.sql,
-            binds: bindParams(params),
-            useTx,
-            mode: "single",
-            includeMetadata: false,
-            maxResponseBytes: cfg.maxResponseBytes,
-          },
-          cfg.sqlTimeoutMs,
-        );
-        updateResults.push({ numberOfRecordsUpdated: result.numberOfRecordsUpdated });
-        deps.recordWrite?.(q.orgId, q.appId, result.numberOfRecordsUpdated);
-      }
+      // ONE lease for the whole batch: between two statements the worker is
+      // idle, and an idle unleased worker is what the pool evicts.
+      await manager.withWorker(q.orgId, q.appId, async (worker) => {
+        for (const params of q.parameterSets) {
+          if (useTx) txRegistry.use(q.transactionId!, appKey);
+          const result = await worker.exec(
+            {
+              sql: q.sql,
+              binds: bindParams(params),
+              useTx,
+              mode: "single",
+              includeMetadata: false,
+              maxResponseBytes: cfg.maxResponseBytes,
+            },
+            cfg.sqlTimeoutMs,
+          );
+          updateResults.push({ numberOfRecordsUpdated: result.numberOfRecordsUpdated });
+          deps.recordWrite?.(q.orgId, q.appId, result.numberOfRecordsUpdated);
+        }
+      });
       return { updateResults };
     } finally {
       limiter.release(appKey);
@@ -105,9 +109,13 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     }
     await limiter.admit(appKey);
     try {
-      const worker = manager.workerFor(q.orgId, q.appId);
-      await worker.control("begin", cfg.txOpTimeoutMs);
-      const entry = txRegistry.create(appKey);
+      // The tx is recorded INSIDE the lease: the lease's end wakes the apps
+      // waiting for a worker, and until the registry knows this tx the pool
+      // would see an idle worker and evict it, BEGIN and all.
+      const entry = await manager.withWorker(q.orgId, q.appId, async (worker) => {
+        await worker.control("begin", cfg.txOpTimeoutMs);
+        return txRegistry.create(appKey);
+      });
       return { transactionId: entry.txId };
     } finally {
       limiter.release(appKey);
@@ -130,9 +138,13 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     }
     await limiter.admit(appKey);
     try {
-      const worker = manager.workerFor(q.orgId, q.appId);
-      await worker.control(action, cfg.txOpTimeoutMs);
-      txRegistry.delete(q.transactionId!);
+      // Forgotten INSIDE the lease, for the mirror reason of BEGIN: the apps
+      // woken by the lease's end must already find this worker evictable, or
+      // they go back to sleep for their whole wait.
+      await manager.withWorker(q.orgId, q.appId, async (worker) => {
+        await worker.control(action, cfg.txOpTimeoutMs);
+        txRegistry.delete(q.transactionId!);
+      });
       return { status: action === "commit" ? "committed" : "rolledback" };
     } finally {
       limiter.release(appKey);

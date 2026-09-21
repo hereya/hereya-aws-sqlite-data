@@ -17,7 +17,7 @@ export function startTxSweeper(cfg: Config, txRegistry: TxRegistry, manager: App
   const sweeper = setInterval(() => {
     for (const expired of txRegistry.sweep()) {
       const [orgId, appId] = expired.appKey.split("/") as [string, string];
-      void manager.workerFor(orgId, appId).control("rollback", cfg.txOpTimeoutMs).catch(() => {});
+      void manager.withWorker(orgId, appId, (w) => w.control("rollback", cfg.txOpTimeoutMs)).catch(() => {});
       console.log(JSON.stringify({ type: "tx-expired", appKey: expired.appKey, txId: expired.txId }));
     }
   }, 2000);

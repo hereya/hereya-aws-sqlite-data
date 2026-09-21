@@ -24,10 +24,15 @@ export class AppManager {
     return join(this.cfg.dbDir, orgId, appId, "app.db");
   }
 
-  workerFor(orgId: string, appId: string): AppWorker {
+  /**
+   * The app's worker, held under a lease for the length of `fn`: the pool never
+   * evicts it meanwhile, and a new app waits for room instead of taking a
+   * worker that is about to be closed (t_worker_evict_inflight_503).
+   */
+  async withWorker<T>(orgId: string, appId: string, fn: (worker: AppWorker) => Promise<T>): Promise<T> {
     const path = this.dbPath(orgId, appId);
     mkdirSync(dirname(path), { recursive: true });
-    return this.pool.get(appKeyOf(orgId, appId), path);
+    return this.pool.run(appKeyOf(orgId, appId), path, fn);
   }
 
   async removeApp(orgId: string, appId: string): Promise<void> {
