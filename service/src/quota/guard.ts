@@ -3,7 +3,7 @@
 // refuses the NEXT write and says what to do; every byte stays readable.
 import { ServiceError } from "../errors.ts";
 import { measureOrgDbBytes } from "./measure.ts";
-import { MB, humanBytes, measureTtlMs, overQuota, sqlSkipsQuota } from "./policy.ts";
+import { EXEMPT_SLACK_BYTES, MB, humanBytes, measureTtlMs, overQuota, sqlSkipsQuota } from "./policy.ts";
 import type { OrgQuotaReader } from "./readers.ts";
 
 /** Refuses writes for an org whose databases are at or over `maxDbMb`. */
@@ -29,16 +29,19 @@ export class DbQuotaGuard {
 
   /**
    * Throws DB_QUOTA_EXCEEDED when this statement would grow an org that has
-   * already reached its cap. Returns immediately (no disk, no network beyond a
-   * cached cap read) for exempt SQL and for uncapped orgs.
+   * already reached its cap. Otherwise returns how many bytes the statement may
+   * still grow its database by — the worker turns it into `max_page_count`, the
+   * ceiling ONE statement (or one transaction) cannot write past, however much
+   * it inserts or whatever its triggers do. `null` = uncapped, no ceiling.
    */
-  async assertWriteAllowed(orgId: string, sql: string): Promise<void> {
-    if (sqlSkipsQuota(sql)) return;
+  async assertWriteAllowed(orgId: string, sql: string): Promise<number | null> {
     const capMb = await this.reader.maxDbMb(orgId);
-    if (capMb === null) return;
+    if (capMb === null) return null;
     const cap = capMb * MB;
     const used = this.bytesFor(orgId, cap);
-    if (!overQuota(used, cap)) return;
+    const exempt = sqlSkipsQuota(sql);
+    if (!overQuota(used, cap)) return cap - used + (exempt ? EXEMPT_SLACK_BYTES : 0);
+    if (exempt) return EXEMPT_SLACK_BYTES;
     console.log(
       JSON.stringify({ type: "quota", ts: new Date().toISOString(), orgId, kind: "db", used, cap, refused: true }),
     );

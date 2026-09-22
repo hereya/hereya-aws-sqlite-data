@@ -16,7 +16,7 @@ export interface Handlers {
   handleBatchExecute: (body: unknown) => Promise<{ updateResults: Array<{ numberOfRecordsUpdated: number }> }>;
   handleTxBegin: (body: unknown) => Promise<{ transactionId: string }>;
   handleTxEnd: (body: unknown, action: "commit" | "rollback") => Promise<{ status: string }>;
-  handleStats: (url: URL) => Promise<{ dbSizeBytes: number }>;
+  handleStats: (url: URL) => Promise<{ dbSizeBytes: number; mainBytes: number }>;
 }
 
 export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers {
@@ -28,7 +28,8 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     await authorize(q.orgId, q.appId);
     // AFTER authorize: an unknown pair is a 403, not a quota answer that would
     // leak whether the org exists.
-    await deps.quota?.assertWriteAllowed(q.orgId, q.sql);
+    // The room left becomes the worker's page ceiling (quota/ceiling.ts).
+    const growBytes = deps.quota ? await deps.quota.assertWriteAllowed(q.orgId, q.sql) : undefined;
     const appKey = appKeyOf(q.orgId, q.appId);
     await limiter.admit(appKey);
     try {
@@ -47,6 +48,7 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
             mode,
             includeMetadata: q.includeResultMetadata,
             maxResponseBytes: cfg.maxResponseBytes,
+            growBytes,
           },
           cfg.sqlTimeoutMs,
         ),
@@ -68,7 +70,7 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
       throw new ServiceError("BAD_REQUEST", "batch-execute requires a single statement");
     }
     await authorize(q.orgId, q.appId);
-    await deps.quota?.assertWriteAllowed(q.orgId, q.sql);
+    const growBytes = deps.quota ? await deps.quota.assertWriteAllowed(q.orgId, q.sql) : undefined;
     const appKey = appKeyOf(q.orgId, q.appId);
     await limiter.admit(appKey);
     try {
@@ -77,7 +79,8 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
       // ONE lease for the whole batch: between two statements the worker is
       // idle, and an idle unleased worker is what the pool evicts.
       await manager.withWorker(q.orgId, q.appId, async (worker) => {
-        for (const params of q.parameterSets) {
+        // ONE ceiling for the whole batch: set by the first set, kept after.
+        for (const [i, params] of q.parameterSets.entries()) {
           if (useTx) txRegistry.use(q.transactionId!, appKey);
           const result = await worker.exec(
             {
@@ -87,6 +90,7 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
               mode: "single",
               includeMetadata: false,
               maxResponseBytes: cfg.maxResponseBytes,
+              growBytes: i === 0 ? growBytes : undefined,
             },
             cfg.sqlTimeoutMs,
           );
@@ -152,22 +156,23 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
   }
 
   /** Db + WAL file sizes for the usage tool. Requires an active pair. */
-  async function handleStats(url: URL): Promise<{ dbSizeBytes: number }> {
+  async function handleStats(url: URL): Promise<{ dbSizeBytes: number; mainBytes: number }> {
     const q = validateTx(
       { org_id: url.searchParams.get("org_id"), app_id: url.searchParams.get("app_id") },
       false,
     );
     await authorize(q.orgId, q.appId);
     const dbPath = manager.dbPath(q.orgId, q.appId);
-    let total = 0;
-    for (const suffix of ["", "-wal"]) {
+    const sizes = ["", "-wal"].map((suffix) => {
       try {
-        total += statSync(dbPath + suffix).size;
+        return statSync(dbPath + suffix).size;
       } catch {
-        // file absent (e.g. never written, or WAL folded) — counts as 0
+        return 0; // file absent (e.g. never written, or WAL folded)
       }
-    }
-    return { dbSizeBytes: total };
+    });
+    // mainBytes = what the quota counts (invariant 10); the connector's gate
+    // reads it so both sides judge the same number.
+    return { dbSizeBytes: sizes[0]! + sizes[1]!, mainBytes: sizes[0]! };
   }
 
   return { handleQuery, handleBatchExecute, handleTxBegin, handleTxEnd, handleStats };

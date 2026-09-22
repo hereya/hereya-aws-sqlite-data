@@ -25,8 +25,10 @@
 //     this disk — no ledger to drift out of sync, and a customer who frees
 //     space is unblocked by the next refresh. Cached with a short TTL that
 //     tightens as the org approaches its cap (see measureTtlMs).
-//   * Check-then-act. The overshoot is bounded by one in-flight statement plus
-//     whatever lands inside the cache window — caps here are commercial, not
+//   * Check-then-act, then a CEILING: the room left becomes the worker's
+//     `max_page_count` (quota/ceiling.ts), so one statement — or a trigger
+//     behind an exempt DELETE — cannot write past it. What remains of the
+//     overshoot is the cache window; caps here are commercial, not
 //     safety-critical.
 //   * An UNCAPPED org pays exactly one cached DynamoDB read and never a
 //     filesystem walk.
@@ -38,7 +40,7 @@
 // "DELETE …; INSERT …" bypass.
 //
 // The code lives in ./quota/ — this file is the stable entry point.
-export { MB, humanBytes, measureTtlMs, overQuota, sqlSkipsQuota } from "./quota/policy.ts";
+export { EXEMPT_SLACK_BYTES, MB, humanBytes, measureTtlMs, overQuota, sqlSkipsQuota } from "./quota/policy.ts";
 export { DdbOrgQuotaReader, StaticOrgQuotaReader, type OrgQuotaReader } from "./quota/readers.ts";
 export { measureOrgDbBytes } from "./quota/measure.ts";
 export { DbQuotaGuard } from "./quota/guard.ts";

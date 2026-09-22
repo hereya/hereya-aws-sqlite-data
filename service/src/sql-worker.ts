@@ -13,6 +13,7 @@ import {
   type SqliteBindable,
   type StatementResult,
 } from "./marshalling.ts";
+import { WriteCeiling } from "./quota/ceiling.ts";
 import { loadVec, resolveVec0Path } from "./vec.ts";
 
 interface ExecMessage {
@@ -24,6 +25,9 @@ interface ExecMessage {
   mode: "single" | "script";
   includeMetadata: boolean;
   maxResponseBytes: number;
+  /** Bytes this statement may grow the file by (org quota); null = no
+   *  ceiling; absent = keep the ceiling already set (the rest of a batch). */
+  growBytes?: number | null;
 }
 
 interface ControlMessage {
@@ -64,8 +68,13 @@ function openConn(): DatabaseSync {
   db.exec("PRAGMA busy_timeout=5000");
   db.exec("PRAGMA foreign_keys=ON");
   db.exec("PRAGMA synchronous=NORMAL");
+  // A checkpointed WAL is truncated back to this, instead of keeping the
+  // high-water mark of the largest write ever made on the disk forever.
+  db.exec("PRAGMA journal_size_limit=67108864");
   return db;
 }
+
+const ceiling = new WriteCeiling();
 
 function conn(useTx: boolean): DatabaseSync {
   if (useTx) {
@@ -126,16 +135,25 @@ function execScript(msg: ExecMessage): StatementResult {
 function handle(msg: WorkerMessage): WorkerReply {
   switch (msg.action) {
     case "exec": {
-      const result = msg.mode === "script" ? execScript(msg) : execSingle(msg);
-      return { id: msg.id, ok: true, result };
+      const db = conn(msg.useTx);
+      ceiling.apply(db, msg.growBytes, msg.useTx);
+      try {
+        const result = msg.mode === "script" ? execScript(msg) : execSingle(msg);
+        return { id: msg.id, ok: true, result };
+      } catch (err) {
+        throw ceiling.translate(db, err);
+      }
     }
     case "begin":
+      ceiling.resetTx();
       conn(true).exec("BEGIN IMMEDIATE");
       return { id: msg.id, ok: true };
     case "commit":
+      ceiling.resetTx();
       conn(true).exec("COMMIT");
       return { id: msg.id, ok: true };
     case "rollback":
+      ceiling.resetTx();
       conn(true).exec("ROLLBACK");
       return { id: msg.id, ok: true };
     case "checkpoint":
