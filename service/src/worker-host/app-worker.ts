@@ -9,6 +9,8 @@ export interface ExecRequest {
   mode: "single" | "script";
   includeMetadata: boolean;
   maxResponseBytes: number;
+  /** Org-quota room in bytes (see quota/ceiling.ts); undefined = keep the current ceiling. */
+  growBytes?: number | null;
 }
 
 interface Job {

@@ -61,6 +61,22 @@ runbook; this file is the working-agreement layer for agents.
     cap. Reads and space-freeing statements (`DELETE`/`DROP`/`VACUUM`) always pass, and the quota
     measures the **main db file only, never the WAL** — `VACUUM` rewrites the database through
     the WAL, so counting it would make freeing space look like growth. See `service/src/quota.ts`.
+    **Since 0.1.49 (t_quota_db_bypass, audit 22/09) the check is also a CEILING.** The guard used to
+    judge the org and then let the statement write whatever it wrote: `WITH … INSERT` rode the
+    exempt `WITH` head, a trigger planted under the cap turned an exempt `DELETE` into a write, and
+    one `INSERT … SELECT randomblob()` issued under the cap could write gigabytes. Now the guard
+    returns the room left (`cap − used`, + `EXEMPT_SLACK_BYTES` = 256 KB for exempt SQL, which is
+    ALL an exempt statement gets once the org is over) and the worker turns it into
+    `PRAGMA max_page_count` before the statement (`service/src/quota/ceiling.ts`): SQLite answers
+    SQLITE_FULL past it, rolls the statement back, and the worker reports `DB_QUOTA_EXCEEDED`. One
+    ceiling per transaction and per batch (set by the first statement) — N statements do not add
+    up N rooms. `WITH` is exempt only when no INSERT/UPDATE/REPLACE follows;
+    `CREATE [UNIQUE] TABLE|INDEX IF NOT EXISTS` (without `AS SELECT`) is exempt, because every
+    system table runs it before a READ and refusing it broke reads, deletes and Telegram ingress
+    over the cap. Residual, stated: the room is computed from a cached measurement, so concurrent
+    statements on different apps of one org can each use it — bounded by the TTL, as before.
+    `journal_size_limit` (64 MB) makes a checkpointed WAL shrink back instead of keeping its
+    high-water mark.
 11. **A NEW SERVICE rolls the instance — a new BUILD must not.** The hash line in
     `buildUserData` is an inert comment but load-bearing: it versions the launch template, so
     a changed hash makes the rolling update replace the instance (~1 min gap with no Data API,
@@ -1176,9 +1192,10 @@ which is S3 latency, not work.
 
 ## Connector-track interfaces (implemented)
 
-- `GET /stats?org_id&app_id → {dbSizeBytes}` — capability-gated usage endpoint; the connector's
-  `get-usage-report` calls it. Counts db + WAL (reporting); the quota counts the db file only
-  (invariant 10) — the two numbers differ on purpose.
+- `GET /stats?org_id&app_id → {dbSizeBytes, mainBytes}` — capability-gated usage endpoint; the
+  connector's `get-usage-report` calls it. `dbSizeBytes` counts db + WAL (reporting); `mainBytes`
+  (0.1.49) is the db file alone — what the quota counts (invariant 10), so the connector's gate can
+  judge the same number as this VM.
 - **Org db quota** — reads `maxDbMb` off the registry's `sk='org'` row (written by the connector
   when it refreshes org-info from dilaya.eu; no new IAM, same table as the app rows) and refuses
   `/query` + `/batch-execute` writes past it with `DB_QUOTA_EXCEEDED` (429). This closes the last

@@ -40,7 +40,29 @@ export function measureTtlMs(used: number, cap: number): number {
 // Statement heads the cap must not stand in the way of: reads, and the
 // statements that FREE space. Mirrors the connector's list verbatim (VACUUM is
 // what actually shrinks a SQLite file after a DELETE, so it has to pass too).
-const QUOTA_EXEMPT_HEAD = /^\s*\(*\s*(SELECT|WITH|EXPLAIN|PRAGMA|DELETE|DROP|VACUUM|ANALYZE|REINDEX)\b/i;
+const QUOTA_EXEMPT_HEAD = /^\s*\(*\s*(SELECT|EXPLAIN|PRAGMA|DELETE|DROP|VACUUM|ANALYZE|REINDEX)\b/i;
+// `WITH` is a read only when what follows the CTEs reads: `WITH c AS (…)
+// INSERT …` used to ride this head straight past the cap (audit 22/09).
+const CTE_HEAD = /^\s*\(*\s*WITH\b/i;
+const CTE_WRITE = /\b(INSERT|UPDATE|REPLACE)\b/i;
+// The `CREATE TABLE IF NOT EXISTS` every system table runs before reading it:
+// a no-op when the table exists, and refusing it broke reads, deletes and
+// Telegram ingress over the cap. `… AS SELECT` copies data — never exempt.
+const IDEMPOTENT_DDL = /^\s*CREATE\s+(UNIQUE\s+)?(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\b/i;
+
+/**
+ * How far an EXEMPT statement may still grow the file: a DELETE runs its
+ * triggers and a b-tree may need a page to rebalance, so "zero" would refuse
+ * the very statements that free space — but a trigger planted under the cap
+ * must not turn a DELETE into an unbounded write (the worker enforces it).
+ */
+export const EXEMPT_SLACK_BYTES = 256 * 1024;
+
+function statementSkipsQuota(s: string): boolean {
+  if (CTE_HEAD.test(s)) return !CTE_WRITE.test(s);
+  if (IDEMPOTENT_DDL.test(s)) return !/\bSELECT\b/i.test(s);
+  return QUOTA_EXEMPT_HEAD.test(s);
+}
 
 /**
  * Does this SQL bypass the cap? Every statement must qualify — a script mixing
@@ -51,5 +73,5 @@ export function sqlSkipsQuota(sql: string): boolean {
     .split(";")
     .filter((s) => /\S/.test(s));
   if (statements.length === 0) return true; // nothing to run
-  return statements.every((s) => QUOTA_EXEMPT_HEAD.test(s));
+  return statements.every(statementSkipsQuota);
 }
