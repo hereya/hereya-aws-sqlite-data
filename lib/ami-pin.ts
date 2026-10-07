@@ -22,10 +22,10 @@
 export const PINNED_AMI_REGION = "eu-west-1";
 
 /**
- * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20260918.0`,
- * published 2026-09-18, rolled 2026-09-20 (previous pin:
- * `ami-0535b4996339a5410`, `al2023-ami-2023.12.20260917.1` — the roll of
- * 2026-09-18; before that `ami-094d17305e4426f8b` on 2026-09-12,
+ * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20260930.0`,
+ * published 2026-09-29, rolled 2026-10-07 by DRAINING (previous pin:
+ * `ami-06f589fd2af7a9fc7`, `al2023-ami-2023.12.20260918.0` — the roll of
+ * 2026-09-20; `ami-0535b4996339a5410` on 2026-09-18; before that `ami-094d17305e4426f8b` on 2026-09-12,
  * `ami-07b0f29165b2646db` on 2026-09-01, `ami-0c941aaee6f2de47e` on 2026-08-21
  * and `ami-053d8df569ac57bbb` on 2026-08-05). To roll the OS:
  * `npm run check:ami`, bump this constant to the id it reports, publish the
@@ -38,12 +38,11 @@ export const PINNED_AMI_REGION = "eu-west-1";
  * 2026-09-18, and the morning's id (`ami-024d0517c23aa48af`) was already stale
  * by the evening.
  *
- * This roll (`t_ami_roll_6`) is the first one that costs NO replacement of its
- * own: it rides the VM replacement that 0.1.41 (per-database Litestream
- * socket) needed anyway — one cut instead of two, at Jonatan's request
- * (2026-09-20).
+ * This roll (`t_dbmove_first_ami_drain`) is the first one done WITHOUT a cut:
+ * `vmCount=2` + `amiIdByCell=0=<old>`, drain cell 0 into cell 1, roll cell 0
+ * empty, drain back, `vmCount=1` (CLAUDE.md, "Rolling the OS without a cut").
  */
-export const PINNED_AMI_ID = "ami-06f589fd2af7a9fc7";
+export const PINNED_AMI_ID = "ami-043de3c7713de1480";
 
 /**
  * The SSM public parameter the pin is measured against. It MUST stay the same
