@@ -1,5 +1,5 @@
 name: dilaya/aws-sqlite-data
-version: 0.1.50
+version: 0.1.51
 description: "Durable SQLite storage for Dilaya: S3-replicated (Litestream) per-app SQLite files served by an HTTP Data API on a self-healing EC2 Spot singleton, fronted by an IAM-authorized API Gateway."
 visibility: private
 iac: cdk
@@ -82,7 +82,7 @@ parameters:
     mandatory: false
     default: "30"
   amiIdByCell:
-    description: "AMI PAR CELLULE, pour UNE procédure : rouler l'OS sans coupure. Format \"<cellule>=<ami-id>[,<cellule>=<ami-id>]\" (ex. \"0=ami-0abc…\") ; les cellules nommées prennent cette image, les autres gardent amiId / l'épingle. Défaut vide = toutes les cellules sur la même image. Pourquoi : un changement de gabarit de lancement roule SA cellule au déploiement qui le porte, et un amiId unique roulerait toutes les cellules d'un coup, bases à bord. Tenir une cellule sur l'ANCIENNE image pendant qu'une autre prend la nouvelle permet de la vider d'abord (POST /admin/drain-cell) puis de la rouler VIDE et hors de Cloud Map — personne ne le voit. Ce n'est PAS un moyen de faire tourner longtemps des images différentes : check:ami lit l'épingle, donc retirer la valeur une fois le roulement fini."
+    description: "AMI PAR CELLULE, pour UNE procédure : rouler l'OS sans coupure. Format \"<cellule>:<ami-id>[,<cellule>:<ami-id>]\" (ex. \"0:ami-0abc…\" ; « = » est accepté aussi, mais hereya coupe un -p à CHAQUE « = » et ne transmet que \"0\") ; les cellules nommées prennent cette image, les autres gardent amiId / l'épingle. Défaut vide = toutes les cellules sur la même image. Pourquoi : un changement de gabarit de lancement roule SA cellule au déploiement qui le porte, et un amiId unique roulerait toutes les cellules d'un coup, bases à bord. Tenir une cellule sur l'ANCIENNE image pendant qu'une autre prend la nouvelle permet de la vider d'abord (POST /admin/drain-cell) puis de la rouler VIDE et hors de Cloud Map — personne ne le voit. Ce n'est PAS un moyen de faire tourner longtemps des images différentes : check:ami lit l'épingle, donc retirer la valeur une fois le roulement fini."
     mandatory: false
     default: ""
   replicationLagAlarmSeconds:

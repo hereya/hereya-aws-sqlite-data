@@ -49,6 +49,14 @@ test("amiIdByCell names the cells it overrides, and only those", () => {
   assert.throws(() => amiIdForCell("0", "ami-pin", "0=a=b"), /invalid amiIdByCell/);
 });
 
+test("':' separates too — hereya splits '-p amiIdByCell=0=ami-…' at EVERY '=' (prod release v0.1.354 got \"0\")", () => {
+  assert.equal(amiIdForCell("0", "ami-pin", "0:ami-old"), "ami-old");
+  assert.equal(amiIdForCell("1", "ami-pin", "0:ami-old,1=ami-x"), "ami-x");
+  assert.throws(() => amiIdForCell("0", "ami-pin", "0:a:b"), /invalid amiIdByCell/);
+  const t = withEnv({ vmCount: "2", amiIdByCell: "0:ami-0123456789abcdef0" }, () => buildTemplate());
+  assert.deepEqual(images(t), { "0": "ami-0123456789abcdef0", "1": PINNED_AMI_ID });
+});
+
 test("holding the origin on the old image while cell 1 takes the pin — the deploy that precedes a drain", () => {
   const t = withEnv({ vmCount: "2", amiIdByCell: "0=ami-0123456789abcdef0" }, () => buildTemplate());
   assert.deepEqual(images(t), { "0": "ami-0123456789abcdef0", "1": PINNED_AMI_ID });
