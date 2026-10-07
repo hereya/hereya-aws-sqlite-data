@@ -547,10 +547,10 @@ consistent `GetItem` per registry poll and the `ReplicationLagMaxSeconds` series
 - `start` is refused when the target is itself being drained (two cells passing the same
   databases back and forth, one pause each time), or when either cell has no serving instance.
 
-**Rolling the OS without a cut** — `amiIdByCell` ("0=ami-old") holds the named cells on an image
+**Rolling the OS without a cut** — `amiIdByCell` ("0:ami-old" — NOT "0=…": hereya splits a `-p` at every `=`, release v0.1.354 died on "0") holds the named cells on an image
 while the others take `amiId`/the pin. A launch-template change rolls ITS cell at the deploy that
 carries it; one image for all would roll every cell at once, databases on board. The procedure,
-from one cell: (1) bump the pin, deploy with `vmCount=2` and `amiIdByCell=0=<old>` — cell 1 is born
+from one cell: (1) bump the pin, deploy with `vmCount=2` and `amiIdByCell=0:<old>` — cell 1 is born
 on the new image, cell 0 does not move; (2) drain 0 → 1, wait for `empty`, `inCloudMap: false` AND `gatewayQuietMs` ≥ 120 000;
 (3) deploy without `amiIdByCell` — cell 0 rolls, empty and unseen; (4) `stop` the order, drain
 1 → 0, `stop`; (5) deploy with `vmCount=1`. Drop the override when done: `check:ami` reads the pin.

@@ -36,8 +36,11 @@ import { PINNED_AMI_ID, PINNED_AMI_REGION } from "../ami-pin.ts";
  */
 export function amiIdForCell(cellId: string, amiId: string, byCell: string): string {
   for (const pair of byCell.split(",").map((p) => p.trim()).filter((p) => p !== "")) {
-    const [cell, ami, ...rest] = pair.split("=").map((p) => p.trim());
-    if (!cell || !ami || rest.length > 0) throw new Error(`invalid amiIdByCell entry: ${JSON.stringify(pair)} (expected "<cellId>=<ami-id>")`);
+    // `:` as well as `=`: hereya splits `-p amiIdByCell=0=ami-…` at EVERY `=` and
+    // hands the package "0" (connector release v0.1.354, 2026-10-07) — so the
+    // value a release can actually carry is "0:ami-…".
+    const [cell, ami, ...rest] = pair.split(/[=:]/).map((p) => p.trim());
+    if (!cell || !ami || rest.length > 0) throw new Error(`invalid amiIdByCell entry: ${JSON.stringify(pair)} (expected "<cellId>:<ami-id>" or "<cellId>=<ami-id>")`);
     if (cell === cellId) return ami;
   }
   return amiId;
