@@ -158,6 +158,18 @@ runbook; this file is the working-agreement layer for agents.
   sqlite-vec by sha256 (`scripts/pins.json`). Bump versions via
   `scripts/{node,litestream,sqlite-vec}-version.txt` and REVIEW the new pins before committing
   (GitHub's release API exposes per-asset sha256 digests to cross-check).
+  **Those three downloads are the only non-AWS network a DEPLOY needs, and they go through
+  `scripts/prefetch-toolchain.mjs` first** (0.1.52, `t_synth_download_fragile`): the build cache is
+  filled from a sha-addressed MIRROR in the account's CDK assets bucket
+  (`s3://cdk-hnb659fds-assets-<account>-<region>/toolchain-mirror/<sha256>/<asset>`, derived from
+  `CDK_DEFAULT_ACCOUNT`/`CDK_DEFAULT_REGION`; `TOOLCHAIN_MIRROR=s3://…` overrides, `off` disables),
+  else from the public URL with retry (1 s, 4 s, 10 s) and written THROUGH to the mirror. Before it,
+  one GitHub 504 at synth failed a release's first attempt (2026-10-12) — and a rollback runs the
+  same synth. It lives OUTSIDE `build-service.mjs` on purpose: that script is a hashed input
+  (invariant 11), so editing it would have rolled the database VM for a change in how bytes
+  arrive. Best-effort by contract — it can only log, never fail a build; `build-service.mjs` keeps
+  its own fetch as the last resort and still verifies every pin. A version bump needs nothing:
+  the first synth after it downloads from the public URL and pins, the next one mirrors.
 - cdk.json runs the app through `npx tsx` (package is ESM; ts-node would choke).
   The repo-local `aws-cdk` devDependency matters: the CLI must be ≥ the lib's cloud-assembly
   schema (a too-old global cdk silently no-ops with a schema-mismatch notice).

@@ -25,6 +25,19 @@ export function createServiceArtifact(stack: cdk.Stack, ctx: StackContext): void
       image: cdk.DockerImage.fromRegistry("public.ecr.aws/docker/library/node:24"),
       local: {
         tryBundle(outputDir: string): boolean {
+          // Fill the download cache first — from the account's S3 mirror, or
+          // the public URLs with retry — so the build itself downloads nothing
+          // (2026-10-12: a GitHub 504 at synth failed a release's first try,
+          // and a ROLLBACK runs the same synth). It is a separate step because
+          // build-service.mjs is a hashed input: editing it replaces the
+          // database VM, and how the archives arrive changes nothing on the
+          // box. Best-effort by contract: a failure here only logs, and
+          // build-service.mjs keeps its own fetch as the last resort.
+          try {
+            execSync(`node ${join(repoRoot, "scripts", "prefetch-toolchain.mjs")}`, { stdio: "inherit" });
+          } catch (e) {
+            console.warn(`prefetch-toolchain.mjs failed (${(e as Error).message}) — build-service.mjs will download directly`);
+          }
           execSync(`node ${join(repoRoot, "scripts", "build-service.mjs")}`, { stdio: "inherit" });
           const built = join(repoRoot, "dist", "service.tar.gz");
           if (!existsSync(built)) throw new Error("build-service.mjs produced no artifact");
