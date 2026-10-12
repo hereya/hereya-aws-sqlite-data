@@ -166,6 +166,7 @@ npm install
 npm test              # unit + integration + CDK assertions (downloads Node 24 + sqlite-vec toolchain)
 npm run typecheck
 npm run build-service # dist/service.tar.gz (hermetic: pinned sha256 Node + litestream + sqlite-vec)
+node scripts/prefetch-toolchain.mjs # optional: fill the build cache from the S3 mirror / public URLs with retry (what a deploy does first)
 ```
 
 Local service without AWS: `REGISTRY_MODE=file REGISTRY_FILE=... LITESTREAM_DISABLED=1 DB_DIR=... node --experimental-strip-types service/src/main.ts` (or use the toolchain node).
