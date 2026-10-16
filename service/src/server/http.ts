@@ -11,8 +11,17 @@ export interface AuditLine {
   ms: number;
 }
 
+// Where `allowed:false` lines go besides the journal (refusals.ts). Null until
+// the boot wires a log group — and in every in-process test boot.
+let refusalSink: ((line: AuditLine) => void) | null = null;
+
+export function setRefusalSink(sink: ((line: AuditLine) => void) | null): void {
+  refusalSink = sink;
+}
+
 export function audit(line: AuditLine): void {
   console.log(JSON.stringify({ type: "audit", ...line }));
+  if (!line.allowed) refusalSink?.(line);
 }
 
 // The capability header the connector attaches per request (Node lowercases

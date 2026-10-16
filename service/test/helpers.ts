@@ -100,6 +100,8 @@ export async function startTestService(
     heartbeatEnabled: false,
     heartbeatPeriodSeconds: 60,
     heartbeatDimension: "test",
+    refusalLogGroup: "",
+    refusalFlushMs: 60_000,
     imdsEnabled: false,
     drainMs: 100,
     cloudMapServiceId: "",

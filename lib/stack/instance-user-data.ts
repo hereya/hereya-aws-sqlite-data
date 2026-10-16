@@ -3,6 +3,7 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { buildUserData } from "../user-data.ts";
 import type { StackContext } from "./context.ts";
 import { input } from "./inputs.ts";
+import { refusalLogGroupName } from "./refusal-log.ts";
 
 export function createUserData(stack: cdk.Stack, ctx: StackContext): void {
   // --- Launch template + self-healing Spot singleton ----------------------
@@ -67,6 +68,8 @@ export function buildCellUserData(stack: cdk.Stack, ctx: StackContext, cellId: s
         HANDOVER_OVERLAP_TIMEOUT_MS: input("handoverOverlapTimeoutMs", "300000"),
         HEARTBEAT_ENABLED: "1",
         HEARTBEAT_DIMENSION: stack.stackName,
+        // Refused requests leave the VM (service/src/refusals.ts).
+        REFUSAL_LOG_GROUP: refusalLogGroupName(stack.stackName),
         IMDS_ENABLED: "1",
         CLOUDMAP_SERVICE_ID: discoveryService.serviceId,
         // "0" is the origin: it owns every app that has no placement row

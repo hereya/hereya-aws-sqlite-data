@@ -17,7 +17,7 @@ import type { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { startCellsAndMoves } from "./moves.ts";
 import { createHandoverClient, createOrgQuotaReader, createRegistry } from "./deps.ts";
 import { logDiskVolume } from "./disk-log.ts";
-import { startEvictionSweep, startHeartbeat, startRegistryPoller, startTxSweeper } from "./loops.ts";
+import { startEvictionSweep, startHeartbeat, startRefusalLog, startRegistryPoller, startTxSweeper } from "./loops.ts";
 import { BootTimer, publishBootTiming } from "./timing.ts";
 import { runHandoverGate } from "../handover/gate.ts";
 import { announceWarming } from "../handover/protocol.ts";
@@ -181,6 +181,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
 
   const evictionSweep = startEvictionSweep({ cfg, sync, writeStats, txRegistry, limiter });
 
+  const refusals = startRefusalLog(cfg);
   const heartbeat = startHeartbeat({ cfg, litestream, sync, stuckMoves: moves && (() => moves.stuck.count), relay: cells.relay });
 
   logDiskVolume(cfg.dbDir);
@@ -202,6 +203,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
       watcher?.stop();
       if (evictionSweep) clearInterval(evictionSweep);
       heartbeat.stop();
+      await refusals?.stop();
       await peerWatch?.retire();
       // Flush before dying: a clean stop should not throw away the interval's worth
       // of history it is holding.
