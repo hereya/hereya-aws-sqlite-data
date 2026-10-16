@@ -104,6 +104,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     heartbeatEnabled: env.HEARTBEAT_ENABLED === "1" || env.HEARTBEAT_ENABLED === "true",
     heartbeatPeriodSeconds: intEnv("HEARTBEAT_PERIOD_SECONDS", 60),
     heartbeatDimension: env.HEARTBEAT_DIMENSION ?? "dilaya-sqlite-data",
+    // Empty = refusals stay in the journal only (local runs, tests).
+    refusalLogGroup: env.REFUSAL_LOG_GROUP ?? "",
+    refusalFlushMs: intEnv("REFUSAL_FLUSH_MS", 60_000),
     imdsEnabled: env.IMDS_ENABLED === "1" || env.IMDS_ENABLED === "true",
     drainMs: intEnv("DRAIN_MS", 5_000),
     cloudMapServiceId: env.CLOUDMAP_SERVICE_ID ?? "",

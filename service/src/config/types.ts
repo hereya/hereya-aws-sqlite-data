@@ -122,6 +122,10 @@ export interface Config {
   heartbeatEnabled: boolean;
   heartbeatPeriodSeconds: number;
   heartbeatDimension: string;
+  /** CloudWatch log group the `allowed:false` audit lines are shipped to
+   *  (refusals.ts). Empty = not shipped. */
+  refusalLogGroup: string;
+  refusalFlushMs: number;
   imdsEnabled: boolean;
   drainMs: number;
   cloudMapServiceId: string;

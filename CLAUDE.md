@@ -930,6 +930,29 @@ misclassification a data-loss bug; this stays the conservative side — and sinc
 2026-08-25 the `recently-served` skip makes the planner agree with it, rather
 than repeatedly evicting apps the promotion gate will hand straight back.
 
+## Refused requests leave the VM (2026-10-16, `t_dataapi_audit_cw`, `service/src/refusals.ts`)
+
+Every request writes one `{"type":"audit",…}` line to the journal, and the journal never leaves
+the instance. The gateway's access log knows neither the org nor the app, so on 2026-10-03
+attributing a spike of 400s (284 `SQL_ERROR` from ONE customer app, right after its backend
+was redeployed) took an `ssm send-command` on the production VM.
+
+- **What ships:** the `allowed:false` audit lines, unchanged (`ts`, `route`, `orgId`, `appId`,
+  `code`, `ms`) plus `cell`, to the log group **`/dilaya/sqlite-data/<stackName>/refusals`**
+  (one stream per instance, `cell-<id>/<hostname>`; retention 30 days). No SQL, no error message —
+  the same fields the journal already had. `RELAYED_*` hops are skipped: the serving cell audits
+  the same request with its real code.
+- **The name is derived, never an output**: an output becomes one more env var on the
+  connector's Lambda, whose 4 KB is nearly spent. A sweep computes it from the stack name.
+- **Best effort, like the heartbeat**: buffered in memory, flushed every 60 s
+  (`REFUSAL_FLUSH_MS`), at most 1 000 lines per window, the excess COUNTED in a
+  `{"type":"refusals_dropped","dropped":N}` line. A failed put logs `{"type":"refusals",…}` and
+  loses that batch here only — the journal still has every line. A SIGTERM roll can lose up to
+  one window (≤ 60 s); `stop()` flushes.
+- **Reading it** (Logs Insights on that group):
+  `stats count() by code, orgId, appId | sort count() desc`.
+- Empty `REFUSAL_LOG_GROUP` = nothing shipped (local runs, every in-process test boot).
+
 ## Capacity telemetry (2026-08-24, `service/src/capacity.ts`)
 
 The heartbeat answers "is it alive". These answer the question that arrives

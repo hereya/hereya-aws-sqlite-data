@@ -6,6 +6,8 @@ import { createCellGauges } from "../cell-gauges.ts";
 import type { Config } from "../config.ts";
 import { daysToMs } from "../eviction.ts";
 import { Heartbeat } from "../heartbeat.ts";
+import { RefusalLog } from "../refusals.ts";
+import { setRefusalSink } from "../server/http.ts";
 import type { Limiter } from "../limits.ts";
 import type { Litestream } from "../litestream.ts";
 import type { Relay } from "../relay.ts";
@@ -112,4 +114,13 @@ export function startHeartbeat(args: {
   });
   heartbeat.start();
   return heartbeat;
+}
+
+/** Refused requests, shipped off the VM (refusals.ts). Null when no log group is wired. */
+export function startRefusalLog(cfg: Config): { stop: () => Promise<void> } | null {
+  if (cfg.refusalLogGroup === "") return null;
+  const log = new RefusalLog({ logGroup: cfg.refusalLogGroup, cellId: cfg.cellId, flushMs: cfg.refusalFlushMs, region: cfg.awsRegion });
+  setRefusalSink((line) => log.record(line));
+  log.start();
+  return { stop: () => (setRefusalSink(null), log.stop()) };
 }

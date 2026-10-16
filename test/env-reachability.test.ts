@@ -61,6 +61,8 @@ const NOT_THE_STACK_S_JOB = new Set([
   "MOVE_MAX_BYTES",
   "MOVE_KEEP_MS",
   "HEARTBEAT_PERIOD_SECONDS",
+  // How often refusals leave the VM (refusals.ts): a latency of the sweep, not a deployment choice.
+  "REFUSAL_FLUSH_MS",
   "LITESTREAM_SNAPSHOT_INTERVAL",
   "MAX_INFLIGHT_TOTAL",
   "MAX_REQUEST_BYTES",

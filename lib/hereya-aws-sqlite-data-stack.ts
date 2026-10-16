@@ -11,6 +11,7 @@ import { createHttpApi } from "./stack/http-api.ts";
 import { createServiceArtifact } from "./stack/service-artifact.ts";
 import { createInstanceRole } from "./stack/instance-role.ts";
 import { createCapabilitySecret } from "./stack/capability-secret.ts";
+import { createRefusalLog } from "./stack/refusal-log.ts";
 import { createUserData } from "./stack/instance-user-data.ts";
 import { createLaunchTemplate } from "./stack/launch-template.ts";
 import { createAsg } from "./stack/asg.ts";
@@ -60,6 +61,7 @@ export class HereyaAwsSqliteDataStack extends cdk.Stack {
 
     createInstanceRole(this, ctx);
     createCapabilitySecret(this, ctx);
+    createRefusalLog(this, ctx);
 
     createUserData(this, ctx);
     createLaunchTemplate(this, ctx);
