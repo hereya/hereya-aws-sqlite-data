@@ -937,10 +937,17 @@ the instance. The gateway's access log knows neither the org nor the app, so on 
 attributing a spike of 400s (284 `SQL_ERROR` from ONE customer app, right after its backend
 was redeployed) took an `ssm send-command` on the production VM.
 
-- **What ships:** the `allowed:false` audit lines, unchanged (`ts`, `route`, `orgId`, `appId`,
-  `code`, `ms`) plus `cell`, to the log group **`/dilaya/sqlite-data/<stackName>/refusals`**
-  (one stream per instance, `cell-<id>/<hostname>`; retention 30 days). No SQL, no error message —
-  the same fields the journal already had. `RELAYED_*` hops are skipped: the serving cell audits
+- **What ships:** the `allowed:false` audit lines (`ts`, `route`, `orgId`, `appId`, `code`, `ms`)
+  plus `cell`, to the log group **`/dilaya/sqlite-data/<stackName>/refusals`** (one stream per
+  instance, `cell-<id>/<hostname>`; retention 30 days). Never the SQL. Since 0.1.55
+  (t_refusal_burst_analyser) a `SQL_ERROR` line also carries **`detail`** — SQLite's own message,
+  cut at `DETAIL_MAX` (200) — and **`via`** (`service/src/caller.ts`): `backend` when the
+  capability token has more than a day to live (an app Lambda's static ten-year token), `connector`
+  for the 300 s per-call one. The connector reads the group (`iamPolicySqliteRefusalRead`,
+  `logs:FilterLogEvents` on it alone) and turns a burst of `via: backend` errors into a fiche for
+  that org: a backend's error is swallowed by a page that answers 200, a chat session's is seen by
+  the model in its own answer. ⚠️ A syntax error's message quotes the offending TOKEN, which can be
+  a literal — bounded, internal, and only ever shown to the org that sent it. `RELAYED_*` hops are skipped: the serving cell audits
   the same request with its real code.
 - **The name is derived, never an output**: an output becomes one more env var on the
   connector's Lambda, whose 4 KB is nearly spent. A sweep computes it from the stack name.
