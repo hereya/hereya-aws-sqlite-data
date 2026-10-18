@@ -22,9 +22,10 @@
 export const PINNED_AMI_REGION = "eu-west-1";
 
 /**
- * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20261012.0`,
- * published 2026-10-07, rolled 2026-10-13 by DRAINING (previous pin:
- * `ami-043de3c7713de1480`, `al2023-ami-2023.12.20260930.0` — the drain roll of
+ * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20261016.0`,
+ * published 2026-10-16, rolled 2026-10-18 by DRAINING (previous pin:
+ * `ami-0afb612d2bb2a041d`, `al2023-ami-2023.12.20261012.0` — the drain roll of
+ * 2026-10-13; `ami-043de3c7713de1480`, `al2023-ami-2023.12.20260930.0` — the drain roll of
  * 2026-10-07; `ami-06f589fd2af7a9fc7` on 2026-09-20; `ami-0535b4996339a5410` on 2026-09-18; `ami-094d17305e4426f8b` on 2026-09-12,
  * `ami-07b0f29165b2646db` on 2026-09-01, `ami-0c941aaee6f2de47e` on 2026-08-21
  * and `ami-053d8df569ac57bbb` on 2026-08-05). To roll the OS:
@@ -42,7 +43,7 @@ export const PINNED_AMI_REGION = "eu-west-1";
  * `vmCount=2` + `amiIdByCell=0:<old>`, drain cell 0 into cell 1, roll cell 0
  * empty, drain back, `vmCount=1` (CLAUDE.md, "Rolling the OS without a cut").
  */
-export const PINNED_AMI_ID = "ami-0afb612d2bb2a041d";
+export const PINNED_AMI_ID = "ami-0e942ce8509bb33b6";
 
 /**
  * The SSM public parameter the pin is measured against. It MUST stay the same

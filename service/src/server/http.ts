@@ -8,8 +8,15 @@ export interface AuditLine {
   appId?: string;
   allowed: boolean;
   code?: string;
+  /** SQL_ERROR only: SQLite's own message, bounded (DETAIL_MAX). */
+  detail?: string;
+  /** SQL_ERROR only: an app's backend or the connector (caller.ts). */
+  via?: "backend" | "connector";
   ms: number;
 }
+
+/** "no such table: invoices" is the whole diagnosis; a long one is cut. */
+export const DETAIL_MAX = 200;
 
 // Where `allowed:false` lines go besides the journal (refusals.ts). Null until
 // the boot wires a log group — and in every in-process test boot.

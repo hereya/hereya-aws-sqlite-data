@@ -4,7 +4,8 @@ import { validateTx } from "../validate.ts";
 import type { ServerDeps } from "./deps.ts";
 import { createGate } from "./gate.ts";
 import { createHandlers } from "./handlers.ts";
-import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, readBody, send, sendRaw } from "./http.ts";
+import { callerOf } from "../caller.ts";
+import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, DETAIL_MAX, readBody, send, sendRaw } from "./http.ts";
 import { parseDrainCell, parseDrainStatus } from "./drain-routes.ts";
 import { parseMoveApp, parseMoveIn } from "./move-routes.ts";
 import { createRelayOut, isRelayed, ServeHere } from "./relay-out.ts";
@@ -191,6 +192,9 @@ export function buildServer(deps: ServerDeps): Server {
         appId,
         allowed: false,
         code: svcErr.code,
+        ...(svcErr.code === "SQL_ERROR"
+          ? { detail: svcErr.message.slice(0, DETAIL_MAX), via: callerOf(capHeader, Math.floor(Date.now() / 1000)) }
+          : {}),
         ms: Date.now() - started,
       });
       send(res, svcErr.status, { error: { code: svcErr.code, message: svcErr.message } });

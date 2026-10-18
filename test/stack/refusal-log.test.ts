@@ -1,6 +1,6 @@
 // The refusal log (t_dataapi_audit_cw): a log group with a name a sweep can
 // derive from the stack alone, a retention, a write-only grant scoped to that
-// group, and the wire that tells the service where it is.
+// group, the wire that tells the service where it is, and the connector's read grant.
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import type { Template } from "aws-cdk-lib/assertions";
@@ -36,4 +36,13 @@ test("the service is told where the group is (a switch with no wire ships nothin
     const userData = JSON.stringify(lt.Properties.LaunchTemplateData.UserData);
     assert.ok(userData.includes("REFUSAL_LOG_GROUP=/dilaya/sqlite-data/TestStack/refusals"), "every cell gets the env var");
   }
+});
+
+test("the connector may READ that group, and nothing more (t_refusal_burst_analyser)", () => {
+  const out = template.findOutputs("iamPolicySqliteRefusalRead");
+  const raw = JSON.stringify(out.iamPolicySqliteRefusalRead?.Value);
+  assert.ok(raw, "the read grant must be exported as an iamPolicy* output");
+  assert.ok(raw.includes("logs:FilterLogEvents"));
+  assert.ok(!raw.includes("PutLogEvents") && !raw.includes('"*"'), "read-only, scoped to the group");
+  assert.ok(raw.includes("RefusalLog"));
 });

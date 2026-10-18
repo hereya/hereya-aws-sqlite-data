@@ -32,4 +32,14 @@ export function createRefusalLog(stack: cdk.Stack, ctx: StackContext): void {
       resources: [group.logGroupArn],
     }),
   );
+  // The connector READS it (t_refusal_burst_analyser): a burst of SQL_ERROR
+  // from one app becomes a fiche for that org. An `iamPolicy*` output is
+  // attached to the connector's role and never lands in its Lambda env, so it
+  // costs none of the 4 KB — the group NAME is still derived, not exported.
+  new cdk.CfnOutput(stack, "iamPolicySqliteRefusalRead", {
+    value: JSON.stringify({
+      Version: "2012-10-17",
+      Statement: [{ Effect: "Allow", Action: ["logs:FilterLogEvents"], Resource: [group.logGroupArn] }],
+    }),
+  });
 }
