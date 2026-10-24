@@ -13,7 +13,7 @@ export function createTelegramRelay(stack: cdk.Stack, ctx: StackContext): void {
   const telegramChatId = input("telegramChatId", "");
   if (telegramTokenParam !== "" && telegramChatId !== "") {
     const relay = new lambda.Function(stack, "HeartbeatRelay", {
-      runtime: lambda.Runtime.NODEJS_22_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       architecture: lambda.Architecture.ARM_64,
       handler: "index.handler",
       code: lambda.Code.fromAsset(join(ctx.repoRoot, "lib", "heartbeat-relay")),

@@ -26,7 +26,7 @@ export function createDiscovery(stack: cdk.Stack, ctx: StackContext): void {
   // error the stack delete proceeds and, at worst, fails on the service
   // exactly like before (the manual runbook still applies).
   const deregisterFn = new lambda.Function(stack, "CloudMapDeregisterFn", {
-    runtime: lambda.Runtime.NODEJS_22_X,
+    runtime: lambda.Runtime.NODEJS_24_X,
     handler: "index.handler",
     timeout: cdk.Duration.minutes(2),
     description: "Deregisters lingering Cloud Map instances so stack deletion can remove the discovery service",
