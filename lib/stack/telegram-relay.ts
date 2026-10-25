@@ -18,7 +18,9 @@ export function createTelegramRelay(stack: cdk.Stack, ctx: StackContext): void {
       handler: "index.handler",
       code: lambda.Code.fromAsset(join(ctx.repoRoot, "lib", "heartbeat-relay")),
       timeout: cdk.Duration.seconds(30),
-      memorySize: 128,
+      // 256, not 128: on nodejs24.x the sibling AlarmRelay peaked at 122 MB of 128 — an OOM here
+      // drops the alert silently, since this relay IS the alert path (t_relay_mem_node24).
+      memorySize: 256,
       environment: {
         TELEGRAM_TOKEN_PARAM: telegramTokenParam,
         TELEGRAM_CHAT_ID: telegramChatId,
