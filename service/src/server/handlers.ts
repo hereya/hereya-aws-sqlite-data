@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { appKeyOf } from "../apps.ts";
 import { ServiceError } from "../errors.ts";
+import { sqlMutates } from "../fence.ts";
 import { bindParams, type StatementResult } from "../marshalling.ts";
 import {
   assertSafeSql,
@@ -27,14 +28,17 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
     assertSafeSql(q.sql);
     await authorize(q.orgId, q.appId);
     // AFTER authorize: an unknown pair is a 403, not a quota answer that would
-    // leak whether the org exists.
+    // leak whether the org exists. The fence first: a moving org's write is
+    // refused for that reason, whatever its quota says.
+    const mutates = sqlMutates(q.sql);
+    await deps.fence?.assertWritable(q.orgId, mutates);
     // The room left becomes the worker's page ceiling (quota/ceiling.ts).
     const growBytes = deps.quota ? await deps.quota.assertWriteAllowed(q.orgId, q.sql) : undefined;
     const appKey = appKeyOf(q.orgId, q.appId);
     await limiter.admit(appKey);
     try {
       const useTx = q.transactionId !== undefined;
-      if (useTx) txRegistry.use(q.transactionId!, appKey);
+      if (useTx) txRegistry.use(q.transactionId!, appKey).wrote ||= mutates;
       const mode = isMultiStatement(q.sql) ? "script" : "single";
       if (mode === "script" && q.params.length > 0) {
         throw new ServiceError("BAD_REQUEST", "parameters are not supported with multi-statement sql");
@@ -70,11 +74,14 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
       throw new ServiceError("BAD_REQUEST", "batch-execute requires a single statement");
     }
     await authorize(q.orgId, q.appId);
+    const mutates = sqlMutates(q.sql);
+    await deps.fence?.assertWritable(q.orgId, mutates);
     const growBytes = deps.quota ? await deps.quota.assertWriteAllowed(q.orgId, q.sql) : undefined;
     const appKey = appKeyOf(q.orgId, q.appId);
     await limiter.admit(appKey);
     try {
       const useTx = q.transactionId !== undefined;
+      if (useTx) txRegistry.use(q.transactionId!, appKey).wrote ||= mutates;
       const updateResults: Array<{ numberOfRecordsUpdated: number }> = [];
       // ONE lease for the whole batch: between two statements the worker is
       // idle, and an idle unleased worker is what the pool evicts.
@@ -138,7 +145,9 @@ export function createHandlers(deps: ServerDeps, authorize: Authorize): Handlers
         return { status: "rolledback" };
       }
     } else {
-      txRegistry.use(q.transactionId!, appKey);
+      // Its writes ran before a freeze; committing them after it would land
+      // past the migration's copy. Refused, the tx stays open: retry or roll back.
+      if (txRegistry.use(q.transactionId!, appKey).wrote) await deps.fence?.assertWritable(q.orgId, true);
     }
     await limiter.admit(appKey);
     try {

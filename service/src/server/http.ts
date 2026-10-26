@@ -65,20 +65,23 @@ export async function readBody(req: IncomingMessage, maxBytes: number): Promise<
   }
 }
 
-export function send(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
+export function send(res: ServerResponse, status: number, body: unknown, retryAfterS?: number): void {
+  sendRaw(res, status, JSON.stringify(body), retryAfterS);
+}
+
+/** A peer's answer, handed back byte for byte (relay-out.ts). */
+export function sendRaw(res: ServerResponse, status: number, payload: string, retryAfterS?: number): void {
   res.writeHead(status, {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(payload),
+    ...(retryAfterS === undefined ? {} : { "retry-after": String(retryAfterS) }),
   });
   res.end(payload);
 }
 
-/** A peer's answer, handed back byte for byte (relay-out.ts). */
-export function sendRaw(res: ServerResponse, status: number, payload: string): void {
-  res.writeHead(status, {
-    "content-type": "application/json",
-    "content-length": Buffer.byteLength(payload),
-  });
-  res.end(payload);
+/** The relay hands back status + body only: a peer's ORG_MIGRATING keeps its
+ *  Retry-After by being recognised here (errors.ts holds the one value). */
+export function relayedRetryAfter(status: number, payload: string): number | undefined {
+  if (status !== 503 || !payload.includes('"ORG_MIGRATING"')) return undefined;
+  return new ServiceError("ORG_MIGRATING", "").retryAfterS;
 }

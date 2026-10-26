@@ -72,6 +72,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     registryCacheMs: intEnv("REGISTRY_CACHE_MS", 30_000),
     registryPollSeconds: intEnv("REGISTRY_POLL_SECONDS", 30),
     orgQuotaCacheMs: intEnv("ORG_QUOTA_CACHE_MS", 30_000),
+    orgFenceCacheMs: intEnv("ORG_FENCE_CACHE_MS", 2_000),
     litestreamDisabled: env.LITESTREAM_DISABLED === "1" || env.LITESTREAM_DISABLED === "true",
     litestreamBin: env.LITESTREAM_BIN ?? "litestream",
     litestreamConfigPath: litestreamConfigPath,

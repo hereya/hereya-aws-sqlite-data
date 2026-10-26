@@ -1,6 +1,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 
 import type { Config } from "../config.ts";
+import type { OrgFenceReader } from "../fence.ts";
 import { DdbOrgQuotaReader, StaticOrgQuotaReader, type OrgQuotaReader } from "../quota.ts";
 import { DdbPlacement, PlacedRegistry } from "../placement.ts";
 import { DdbRegistry, FileRegistry, type Registry } from "../registry.ts";
@@ -17,15 +18,17 @@ export function createRegistry(cfg: Config): Registry {
 }
 
 /**
- * Where org caps come from. In file (local-dev) mode there is no org row to
- * read and nothing to bill, so nothing is capped.
+ * Where org caps — and the migration freeze, off the same row — come from. In
+ * file (local-dev) mode there is no org row to read and nothing to bill, so
+ * nothing is capped and nothing is ever frozen.
  */
-export function createOrgQuotaReader(cfg: Config): OrgQuotaReader {
+export function createOrgQuotaReader(cfg: Config): OrgQuotaReader & OrgFenceReader {
   if (cfg.registryMode === "file") return new StaticOrgQuotaReader();
   return new DdbOrgQuotaReader({
     tableName: cfg.registryTable,
     region: cfg.awsRegion,
     cacheMs: cfg.orgQuotaCacheMs,
+    fenceCacheMs: cfg.orgFenceCacheMs,
   });
 }
 

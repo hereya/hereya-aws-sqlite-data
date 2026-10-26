@@ -54,7 +54,7 @@ runbook; this file is the working-agreement layer for agents.
 9. **`longValue`/`booleanValue` params bind as `bigint`, not `number`.** node:sqlite binds a JS
    number with `sqlite3_bind_double` even when integral; ordinary column affinity hides it, but
    vec0 rejects a REAL rowid. Don't "simplify" the BigInt conversion in marshalling.
-10. **The db quota FAILS OPEN — the one check here that does.** Everything else on this VM is
+10. **The db quota FAILS OPEN — and so does the migration fence (below), stickily.** Everything else on this VM is
     fail-closed because it answers "may this caller touch this app". `maxDbMb` answers "has this
     customer bought enough space": an unreadable cap, an absent attribute or `null` = NO cap.
     Refusing an org's own writes because DynamoDB blinked is a worse failure than one unenforced
@@ -1246,6 +1246,18 @@ which is S3 latency, not work.
   `/query` + `/batch-execute` writes past it with `DB_QUOTA_EXCEEDED` (429). This closes the last
   hole in the caps: a per-app Lambda writes here DIRECTLY with its own capability token, so the
   connector's own enforcement never sees those statements.
+- **Org migration fence** (Région CA — P2 lot 1c, `service/src/fence.ts`) — the same org row may
+  carry `migrationFreeze` (any value = frozen; written by the connector's `admin-org-migrate`).
+  While it is there, every MUTATING statement of that org on `/query` + `/batch-execute` —
+  DELETE/DROP/VACUUM/ANALYZE/REINDEX included, unlike the quota — and the COMMIT of a transaction
+  that wrote are refused with **503 `ORG_MIGRATING`** (the connector's French message) +
+  `Retry-After: 120`. Reads (SELECT, read-only CTE, the allowed PRAGMAs, EXPLAIN, `CREATE … IF NOT
+  EXISTS`) pass; `/admin/*` is never fenced (the migration drives it). The freeze is read by the
+  quota's reader in the SAME consistent GetItem, but trusted only `ORG_FENCE_CACHE_MS` (2 s) vs
+  the cap's 30 s, so a freeze bites within ~2 s on every cell. Unreadable row = fail OPEN like the
+  quota, but STICKY: a failed read keeps the last answer this VM saw, so a freeze already seen
+  survives a registry blip. The migration must wait fence TTL + SQL timeout after setting the
+  freeze before its final copy (a write admitted just before may still be running).
 - `POST /admin/delete-app {org_id, app_id}` — drop-schema teardown: close executor, drop from
   litestream config, delete the local file, **KEEP the S3 replica**. Capability-gated but skips
   the active-status check (the connector flips the registry row to `deleting` first); the

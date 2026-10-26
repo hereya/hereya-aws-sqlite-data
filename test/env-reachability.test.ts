@@ -69,6 +69,9 @@ const NOT_THE_STACK_S_JOB = new Set([
   "MAX_RESPONSE_BYTES",
   "MAX_SQL_BYTES",
   "ORG_QUOTA_CACHE_MS",
+  // The freeze's TTL (fence.ts): how fast a migration bites — the migration's
+  // wait is computed from the code default, so no deployment may move it.
+  "ORG_FENCE_CACHE_MS",
   "REGISTRY_CACHE_MS",
   "TX_IDLE_MS",
   "TX_MAX_MS",
