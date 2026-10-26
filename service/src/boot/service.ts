@@ -6,6 +6,7 @@ import { AppManager, appKeyOf } from "../apps.ts";
 import { Limiter } from "../limits.ts";
 import { Litestream } from "../litestream.ts";
 import { DbQuotaGuard } from "../quota.ts";
+import { OrgFence } from "../fence.ts";
 import { buildServer } from "../server.ts";
 import { Shutdown } from "../shutdown.ts";
 import { AppSync } from "../sync.ts";
@@ -52,7 +53,8 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
   const manager = new AppManager(cfg, pool);
   const limiter = new Limiter({ maxPerApp: cfg.maxInflightPerApp, maxTotal: cfg.maxInflightTotal });
   const sync = new AppSync(registry, manager, litestream, cfg.bootRestoreConcurrency);
-  const quota = new DbQuotaGuard({ dbDir: cfg.dbDir, reader: createOrgQuotaReader(cfg) });
+  const orgReader = createOrgQuotaReader(cfg); // the cap AND the freeze: one org row
+  const [quota, fence] = [new DbQuotaGuard({ dbDir: cfg.dbDir, reader: orgReader }), new OrgFence(orgReader)];
   // Per-app write recency. Seeded from DynamoDB so an instance replacement does
   // not reset the very history it exists to accumulate — that reset is exactly
   // what made the replica-bucket timestamps unusable.
@@ -109,7 +111,7 @@ export async function bootService(cfg: Config, opts: { installSignalHandlers?: b
     manager,
     txRegistry,
     limiter,
-    quota,
+    quota, fence,
     ...(cells.relay ? { relay: cells.relay } : {}),
     ...adminRoutes,
     onGatewayRequest: () => drain?.sawGatewayRequest(),

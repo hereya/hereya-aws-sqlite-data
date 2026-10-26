@@ -23,6 +23,9 @@ export interface Config {
    *  Raising a cap for a blocked customer must take effect in seconds, not
    *  minutes — hence a short TTL on a cheap single-item read. */
   orgQuotaCacheMs: number;
+  /** How long an org's migration freeze stays trusted (fence.ts) — the delay
+   *  before a freeze bites on this cell. Read off the same org row. */
+  orgFenceCacheMs: number;
   litestreamDisabled: boolean;
   litestreamBin: string;
   litestreamConfigPath: string;

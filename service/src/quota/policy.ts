@@ -48,7 +48,7 @@ const CTE_WRITE = /\b(INSERT|UPDATE|REPLACE)\b/i;
 // The `CREATE TABLE IF NOT EXISTS` every system table runs before reading it:
 // a no-op when the table exists, and refusing it broke reads, deletes and
 // Telegram ingress over the cap. `… AS SELECT` copies data — never exempt.
-const IDEMPOTENT_DDL = /^\s*CREATE\s+(UNIQUE\s+)?(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\b/i;
+export const IDEMPOTENT_DDL = /^\s*CREATE\s+(UNIQUE\s+)?(TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\b/i;
 
 /**
  * How far an EXEMPT statement may still grow the file: a DELETE runs its

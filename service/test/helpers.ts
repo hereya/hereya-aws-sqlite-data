@@ -6,6 +6,7 @@ import type { Config } from "../src/config.ts";
 import { AppManager } from "../src/apps.ts";
 import { Limiter } from "../src/limits.ts";
 import { DbQuotaGuard, StaticOrgQuotaReader } from "../src/quota.ts";
+import { OrgFence } from "../src/fence.ts";
 import { FileRegistry, type Registry } from "../src/registry.ts";
 import type { Relay } from "../src/relay.ts";
 import type { Moves } from "../src/server/move-routes.ts";
@@ -35,6 +36,9 @@ export interface TestServiceOptions {
   /** Clock for the usage-measurement cache, so a test can jump past its TTL
    *  instead of sleeping through it. */
   quotaNow?: () => number;
+  /** Orgs under a migration freeze (fence.ts); the test mutates the set to
+   *  freeze/unfreeze mid-run. Omitted = no fence at all. */
+  frozenOrgs?: Set<string>;
   /** Placement over the file registry, and the relay towards the other cells
    *  (relay.test.ts). Omitted = one cell that holds everything. */
   wrapRegistry?: (inner: Registry) => Registry;
@@ -77,6 +81,7 @@ export async function startTestService(
     registryCacheMs: 100,
     registryPollSeconds: 30,
     orgQuotaCacheMs: 0,
+    orgFenceCacheMs: 0,
     litestreamDisabled: true,
     litestreamBin: "litestream",
     litestreamConfigPath: join(dir, "litestream.yml"),
@@ -130,8 +135,9 @@ export async function startTestService(
           reader: new StaticOrgQuotaReader(opts.quotaCaps),
           now: opts.quotaNow,
         });
+  const fence = opts.frozenOrgs && new OrgFence({ migrationFrozen: async (org) => opts.frozenOrgs!.has(org) });
   const moves = opts.moves?.({ cfg, registry, manager, limiter, txRegistry });
-  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter, quota, relay: opts.relay, onDeleteApp: opts.onDeleteApp, moves, ensureServed: opts.ensureServed });
+  const server: Server = buildServer({ cfg, registry, manager, txRegistry, limiter, quota, fence, relay: opts.relay, onDeleteApp: opts.onDeleteApp, moves, ensureServed: opts.ensureServed });
 
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();

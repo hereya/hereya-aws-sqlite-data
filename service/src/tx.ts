@@ -6,6 +6,8 @@ export interface TxEntry {
   appKey: string; // `${orgId}/${appId}` — a tx can only ever be used by the pair that opened it
   createdAt: number;
   lastTouch: number;
+  /** A mutating statement ran in it: its COMMIT is a write (fence.ts). */
+  wrote?: boolean;
 }
 
 export interface TxRegistryOptions {

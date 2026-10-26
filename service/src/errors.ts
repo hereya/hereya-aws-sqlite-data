@@ -13,6 +13,7 @@ export type ErrorCode =
   | "MISPLACED"
   | "MOVE_ABORTED"
   | "UNAVAILABLE"
+  | "ORG_MIGRATING"
   | "INTERNAL";
 
 const STATUS: Record<ErrorCode, number> = {
@@ -38,18 +39,26 @@ const STATUS: Record<ErrorCode, number> = {
   // is exactly where and how it was.
   MOVE_ABORTED: 409,
   UNAVAILABLE: 503,
+  // The org is moving region (fence.ts): writes are held for a few minutes.
+  // 503 + Retry-After is what app runtimes and senders read as "come back".
+  ORG_MIGRATING: 503,
   INTERNAL: 500,
 };
+
+/** Seconds a refused caller is told to wait (Retry-After). Same as the connector's FREEZE_RETRY_AFTER_S. */
+const RETRY_AFTER_S: Partial<Record<ErrorCode, number>> = { ORG_MIGRATING: 120 };
 
 export class ServiceError extends Error {
   readonly code: ErrorCode;
   readonly status: number;
+  readonly retryAfterS: number | undefined;
 
   constructor(code: ErrorCode, message: string) {
     super(message);
     this.name = "ServiceError";
     this.code = code;
     this.status = STATUS[code];
+    this.retryAfterS = RETRY_AFTER_S[code];
   }
 }
 

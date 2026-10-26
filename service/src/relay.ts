@@ -119,7 +119,8 @@ export class Relay {
         const res = await this.send(target, req);
         // A draining peer answers 503: its successor is announced under a new
         // id, which the next request should find without waiting for the cache.
-        if (res.status === 503) this.peers.reload();
+        // A frozen org's 503 (fence.ts) is a verdict on the org, not the peer.
+        if (res.status === 503 && !res.body.includes('"ORG_MIGRATING"')) this.peers.reload();
         return res;
       } catch (err) {
         const message = (err as Error).message;

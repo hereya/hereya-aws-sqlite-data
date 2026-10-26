@@ -5,7 +5,7 @@ import type { ServerDeps } from "./deps.ts";
 import { createGate } from "./gate.ts";
 import { createHandlers } from "./handlers.ts";
 import { callerOf } from "../caller.ts";
-import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, DETAIL_MAX, readBody, send, sendRaw } from "./http.ts";
+import { audit, CAPABILITY_GATED_POST, CAPABILITY_HEADER, DETAIL_MAX, readBody, relayedRetryAfter, send, sendRaw } from "./http.ts";
 import { parseDrainCell, parseDrainStatus } from "./drain-routes.ts";
 import { parseMoveApp, parseMoveIn } from "./move-routes.ts";
 import { createRelayOut, isRelayed, ServeHere } from "./relay-out.ts";
@@ -172,7 +172,7 @@ export function buildServer(deps: ServerDeps): Server {
           const relayed = await relayOut(req, { orgId, appId, capHeader, body });
           if (relayed !== null) {
             audit({ ts: new Date().toISOString(), route, orgId, appId, allowed: relayed.status < 400, code: `RELAYED_${relayed.toCell}`, ms: Date.now() - started });
-            sendRaw(res, relayed.status, relayed.body);
+            sendRaw(res, relayed.status, relayed.body, relayedRetryAfter(relayed.status, relayed.body));
             return;
           }
         } catch (relayErr) {
@@ -197,7 +197,7 @@ export function buildServer(deps: ServerDeps): Server {
           : {}),
         ms: Date.now() - started,
       });
-      send(res, svcErr.status, { error: { code: svcErr.code, message: svcErr.message } });
+      send(res, svcErr.status, { error: { code: svcErr.code, message: svcErr.message } }, svcErr.retryAfterS);
     }
   }
 }

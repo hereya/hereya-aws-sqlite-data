@@ -4,6 +4,7 @@ import type { Registry } from "../registry.ts";
 import type { TxRegistry } from "../tx.ts";
 import type { Limiter } from "../limits.ts";
 import type { DbQuotaGuard } from "../quota.ts";
+import type { OrgFence } from "../fence.ts";
 import type { Relay } from "../relay.ts";
 import type { Drains } from "./drain-routes.ts";
 import type { Moves } from "./move-routes.ts";
@@ -16,6 +17,8 @@ export interface ServerDeps {
   limiter: Limiter;
   /** Org database cap. Absent = no cap is enforced (local dev, bare tests). */
   quota?: DbQuotaGuard;
+  /** Org migration freeze (fence.ts). Absent = never frozen (local dev, bare tests). */
+  fence?: OrgFence;
   /** Restore-before-first-query hook (hot-add); absent in bare-core tests. */
   ensureServed?: (orgId: string, appId: string) => Promise<void>;
   /** Records that a statement changed this app's database. Synchronous and
