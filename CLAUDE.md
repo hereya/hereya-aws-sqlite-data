@@ -112,8 +112,11 @@ runbook; this file is the working-agreement layer for agents.
     outranks it with 1. This replaced a prose instruction that lived in two documents and was
     never once executed — a stale image went unnoticed for four weeks. `amiId=latest` re-enables
     auto-resolution
-    (surprise roll included); an id is region-scoped, so the default is refused outside
-    `PINNED_AMI_REGION` rather than producing an ASG that can't launch. With this, the ONLY things
+    (surprise roll included); an id is region-scoped, so the pin is a **per-region map**
+    (`PINNED_AMI_IDS`, t_rca_p0_infra: eu-west-1 + ca-central-1, the SAME image name in each), the
+    stack takes its region's entry, and a region without one fails at synth rather than producing
+    an ASG that can't launch. A roll bumps EVERY entry to the same image (`npm run check:ami --
+    --region <r>` per region; it compares that region's pin). With this, the ONLY things
     that touch the production databases are a new service, a bumped pin, and a changed
     `rootVolumeGb` (invariant 13) — all three deliberate.
 13. **The root volume size is ours, not the AMI's.** Until 2026-08-25 the launch template carried

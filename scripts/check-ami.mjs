@@ -23,7 +23,7 @@
 import { execFileSync } from "node:child_process";
 import {
   AL2023_SSM_PARAMETER,
-  PINNED_AMI_ID,
+  PINNED_AMI_IDS,
   PINNED_AMI_REGION,
   amiPinStatus,
   describeLookup,
@@ -34,6 +34,13 @@ import {
 const args = process.argv.slice(2);
 const stackName = argValue("--stack");
 const region = argValue("--region") ?? PINNED_AMI_REGION;
+// The pin OF the region measured (t_rca_p0_infra): comparing the eu-west-1 id
+// with another region's published image would report a permanent "behind".
+const PINNED_AMI_ID = PINNED_AMI_IDS[region];
+if (!PINNED_AMI_ID) {
+  console.log(`No pinned AMI for ${region} (pinned: ${Object.keys(PINNED_AMI_IDS).join(", ")}).`);
+  process.exit(2);
+}
 
 function argValue(flag) {
   const i = args.indexOf(flag);

@@ -138,8 +138,9 @@ with `latestAmazonLinux2023()` the image was re-resolved at every deploy, and th
 after any AWS publication (~monthly) rolled production. Move the OS deliberately — bump
 `PINNED_AMI_ID`, publish, roll out via a connector release — and announce it. Cost of the pin: OS
 security patches arrive when we roll it, not by accident. `amiId=latest` restores the old
-auto-resolving behaviour; outside eu-west-1 you must pass `latest` or a region-local arm64 AL2023
-id (synth fails otherwise).
+auto-resolving behaviour. The pin is per region (`PINNED_AMI_IDS`: eu-west-1 and ca-central-1, the
+same AL2023 image in each); in any other region you must pass `latest` or a region-local arm64
+AL2023 id (synth fails otherwise). A roll bumps every region's entry to the same image name.
 
 **`npm run check:ami` — the half that makes the pin safe.** The pin only stays defensible if
 something notices when it falls behind, so the comparison is a command rather than a line in this
