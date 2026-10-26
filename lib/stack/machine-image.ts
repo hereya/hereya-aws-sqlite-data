@@ -4,7 +4,7 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 // the production database VM, so it moves only when a human bumps the constant
 // — never because AWS published something. The pin and the check that tells us
 // it has fallen behind (`npm run check:ami`) live together in ../ami-pin.ts.
-import { PINNED_AMI_ID, PINNED_AMI_REGION } from "../ami-pin.ts";
+import { PINNED_AMI_ID, PINNED_AMI_IDS } from "../ami-pin.ts";
 
 /**
  * The VM's AMI — pinned by default, on purpose.
@@ -46,6 +46,24 @@ export function amiIdForCell(cellId: string, amiId: string, byCell: string): str
   return amiId;
 }
 
+/**
+ * The default AMI of the stack's region (t_rca_p0_infra): PINNED_AMI_IDS[region].
+ * An env-agnostic stack (unresolved region) keeps the eu-west-1 pin, as before.
+ * A region without a pin fails here, at synth, saying what to do.
+ */
+export function pinnedAmiFor(stack: cdk.Stack): string {
+  if (cdk.Token.isUnresolved(stack.region)) return PINNED_AMI_ID;
+  const id = PINNED_AMI_IDS[stack.region];
+  if (!id) {
+    throw new Error(
+      `No pinned AMI for ${stack.region} (pinned regions: ${Object.keys(PINNED_AMI_IDS).join(", ")}). ` +
+        `Add that region's id of the SAME AL2023 image to PINNED_AMI_IDS (lib/ami-pin.ts), ` +
+        `or pass amiId=<an arm64 AL2023 AMI of ${stack.region}> (amiId=latest resolves it at deploy time).`,
+    );
+  }
+  return id;
+}
+
 export function resolveMachineImage(stack: cdk.Stack, amiId: string): ec2.IMachineImage {
   if (amiId === "latest") {
     return ec2.MachineImage.latestAmazonLinux2023({
@@ -57,15 +75,12 @@ export function resolveMachineImage(stack: cdk.Stack, amiId: string): ec2.IMachi
       `amiId must be an AMI id ("ami-…") or the literal "latest"; got ${JSON.stringify(amiId)}`,
     );
   }
-  // An AMI id is region-scoped: the pinned default only exists in eu-west-1.
+  // An AMI id is region-scoped: a pin only exists in its own region.
   // Fail here rather than with an ASG that cannot launch anything.
-  if (
-    amiId === PINNED_AMI_ID &&
-    !cdk.Token.isUnresolved(stack.region) &&
-    stack.region !== PINNED_AMI_REGION
-  ) {
+  const pinRegion = Object.keys(PINNED_AMI_IDS).find((r) => PINNED_AMI_IDS[r] === amiId);
+  if (pinRegion && !cdk.Token.isUnresolved(stack.region) && stack.region !== pinRegion) {
     throw new Error(
-      `The default amiId (${PINNED_AMI_ID}) is an AL2023 arm64 image of ${PINNED_AMI_REGION} and does not exist in ${stack.region}. ` +
+      `The amiId ${amiId} is the pinned AL2023 arm64 image of ${pinRegion} and does not exist in ${stack.region}. ` +
         `Pass amiId=<an arm64 AL2023 AMI of ${stack.region}>, or amiId=latest to resolve it at deploy time.`,
     );
   }

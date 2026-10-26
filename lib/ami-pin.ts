@@ -43,7 +43,17 @@ export const PINNED_AMI_REGION = "eu-west-1";
  * `vmCount=2` + `amiIdByCell=0:<old>`, drain cell 0 into cell 1, roll cell 0
  * empty, drain back, `vmCount=1` (CLAUDE.md, "Rolling the OS without a cut").
  */
-export const PINNED_AMI_ID = "ami-0e942ce8509bb33b6";
+export const PINNED_AMI_IDS: Readonly<Record<string, string>> = {
+  "eu-west-1": "ami-0e942ce8509bb33b6",
+  // The SAME image in Montréal (t_rca_p0_infra, 2026-10-26): name
+  // `al2023-ami-2023.12.20261016.0-kernel-6.1-arm64`, owner amazon
+  // (137112412989), read with `ec2 describe-images`. A roll bumps EVERY entry
+  // to the same image name (`npm run check:ami -- --region <r>` per region).
+  "ca-central-1": "ami-0658cdb60624f22b1",
+};
+
+/** The eu-west-1 pin — the region `check:ami` measures by default. */
+export const PINNED_AMI_ID = PINNED_AMI_IDS[PINNED_AMI_REGION]!;
 
 /**
  * The SSM public parameter the pin is measured against. It MUST stay the same

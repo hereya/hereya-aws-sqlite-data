@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import {
   AL2023_SSM_PARAMETER,
   PINNED_AMI_ID,
+  PINNED_AMI_IDS,
   PINNED_AMI_REGION,
   amiPinStatus,
   describeLookup,
@@ -175,4 +176,12 @@ test("the pin is measured against the parameter it was taken from", () => {
   assert.match(AL2023_SSM_PARAMETER, /al2023-ami-kernel-6\.1-arm64$/);
   assert.match(PINNED_AMI_ID, /^ami-[0-9a-f]{8,17}$/);
   assert.equal(PINNED_AMI_REGION, "eu-west-1");
+});
+
+test("one pin per region, eu-west-1 being PINNED_AMI_ID (t_rca_p0_infra)", () => {
+  assert.equal(PINNED_AMI_IDS[PINNED_AMI_REGION], PINNED_AMI_ID);
+  assert.deepEqual(Object.keys(PINNED_AMI_IDS).sort(), ["ca-central-1", "eu-west-1"]);
+  for (const id of Object.values(PINNED_AMI_IDS)) assert.match(id, /^ami-[0-9a-f]{8,17}$/);
+  // AMI ids are per region: two regions can never share one.
+  assert.equal(new Set(Object.values(PINNED_AMI_IDS)).size, Object.keys(PINNED_AMI_IDS).length);
 });

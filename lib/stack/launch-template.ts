@@ -1,12 +1,17 @@
 import type * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import { PINNED_AMI_ID } from "../ami-pin.ts";
 import type { StackContext } from "./context.ts";
 import { input } from "./inputs.ts";
-import { amiIdForCell, resolveMachineImage } from "./machine-image.ts";
+import { amiIdForCell, pinnedAmiFor, resolveMachineImage } from "./machine-image.ts";
 
 export function createLaunchTemplate(stack: cdk.Stack, ctx: StackContext): void {
   ctx.launchTemplate = buildLaunchTemplate(stack, ctx, "LaunchTemplate", ctx.userData);
+}
+
+/** `amiId` when given, else the stack region's pin (pinnedAmiFor). */
+function defaultAmi(stack: cdk.Stack): string {
+  const raw = input("amiId", "");
+  return raw === "" ? pinnedAmiFor(stack) : raw.trim();
 }
 
 /** Every cell's template is this one, user data apart (cells.ts). */
@@ -35,7 +40,7 @@ export function buildLaunchTemplate(stack: cdk.Stack, ctx: StackContext, id: str
   }
 
   return new ec2.LaunchTemplate(stack, id, {
-    machineImage: resolveMachineImage(stack, amiIdForCell(cellId, input("amiId", PINNED_AMI_ID).trim(), input("amiIdByCell", ""))),
+    machineImage: resolveMachineImage(stack, amiIdForCell(cellId, defaultAmi(stack), input("amiIdByCell", ""))),
     instanceType: new ec2.InstanceType(ctx.instanceType),
     role: ctx.role,
     securityGroup: ctx.instanceSg,
