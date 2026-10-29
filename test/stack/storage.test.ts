@@ -11,13 +11,13 @@ before(() => {
   template = buildTemplate();
 });
 
-test("replica bucket: NO versioning, and NO lifecycle rule but the purge archive's (outside every replica path)", () => {
+test("replica bucket: NO versioning; only the purge's two lifecycle rules (archive prefix, purge tag)", () => {
   const buckets = template.findResources("AWS::S3::Bucket");
   const names = Object.keys(buckets).filter((k) => k.startsWith("ReplicaBucket"));
   assert.equal(names.length, 1);
   const bucket = buckets[names[0]!]!;
-  // Litestream owns retention under <org>/<app>/app.db/: the only rule is on the
-  // connector's purge archive, a prefix no org id (UUID) can start.
+  // Litestream owns retention under <org>/<app>/app.db/: the only rules are the
+  // purge archive prefix and the purge tag (litestream never tags an object).
   assert.deepEqual(bucket.Properties.LifecycleConfiguration, {
     Rules: [
       {
@@ -26,6 +26,12 @@ test("replica bucket: NO versioning, and NO lifecycle rule but the purge archive
         Prefix: "_archive/orgpurge/",
         ExpirationInDays: 30,
         AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+      },
+      {
+        Id: "OrgPurgeTaggedExpiry",
+        Status: "Enabled",
+        TagFilters: [{ Key: "dilaya-purge", Value: "1" }],
+        ExpirationInDays: 1,
       },
     ],
   });
