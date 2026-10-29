@@ -11,12 +11,30 @@ before(() => {
   template = buildTemplate();
 });
 
-test("replica bucket has NO lifecycle rules and NO versioning", () => {
+test("replica bucket: NO versioning; only the purge's two lifecycle rules (archive prefix, purge tag)", () => {
   const buckets = template.findResources("AWS::S3::Bucket");
   const names = Object.keys(buckets).filter((k) => k.startsWith("ReplicaBucket"));
   assert.equal(names.length, 1);
   const bucket = buckets[names[0]!]!;
-  assert.equal(bucket.Properties.LifecycleConfiguration, undefined, "no lifecycle rules allowed (Litestream owns retention)");
+  // Litestream owns retention under <org>/<app>/app.db/: the only rules are the
+  // purge archive prefix and the purge tag (litestream never tags an object).
+  assert.deepEqual(bucket.Properties.LifecycleConfiguration, {
+    Rules: [
+      {
+        Id: "OrgPurgeArchiveExpiry",
+        Status: "Enabled",
+        Prefix: "_archive/orgpurge/",
+        ExpirationInDays: 30,
+        AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+      },
+      {
+        Id: "OrgPurgeTaggedExpiry",
+        Status: "Enabled",
+        TagFilters: [{ Key: "dilaya-purge", Value: "1" }],
+        ExpirationInDays: 1,
+      },
+    ],
+  });
   assert.equal(bucket.Properties.VersioningConfiguration, undefined, "versioning must stay off");
   assert.deepEqual(bucket.Properties.PublicAccessBlockConfiguration, {
     BlockPublicAcls: true,
