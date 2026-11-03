@@ -36,10 +36,21 @@ export function createRefusalLog(stack: cdk.Stack, ctx: StackContext): void {
   // from one app becomes a fiche for that org. An `iamPolicy*` output is
   // attached to the connector's role and never lands in its Lambda env, so it
   // costs none of the 4 KB — the group NAME is still derived, not exported.
+  //
+  // Both ARN formats: `logGroupArn` ends in `:*` (the log-stream form), and
+  // from 2027-04-26 AWS grants log-group-level actions such as FilterLogEvents
+  // only through the bare log-group ARN. Keeping the old form too means no gap
+  // on either side of that date.
+  const groupArn = cdk.Stack.of(stack).formatArn({
+    service: "logs",
+    resource: "log-group",
+    resourceName: group.logGroupName,
+    arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+  });
   new cdk.CfnOutput(stack, "iamPolicySqliteRefusalRead", {
     value: JSON.stringify({
       Version: "2012-10-17",
-      Statement: [{ Effect: "Allow", Action: ["logs:FilterLogEvents"], Resource: [group.logGroupArn] }],
+      Statement: [{ Effect: "Allow", Action: ["logs:FilterLogEvents"], Resource: [groupArn, group.logGroupArn] }],
     }),
   });
 }
