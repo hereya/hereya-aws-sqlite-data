@@ -1,6 +1,8 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { BUSY_MESSAGE, BUSY_TIMEOUT_MS } from "../busy-timeout.ts";
 import { ServiceError, type ErrorCode } from "../errors.ts";
 import type { SqliteBindable, StatementResult } from "../marshalling.ts";
+import { TxHold } from "./tx-hold.ts";
 
 export interface ExecRequest {
   sql: string;
@@ -33,6 +35,10 @@ const CLOSE_GRACE_MS = 1000;
  * query stuck inside a single native sqlite3_step (worker_threads terminate()
  * cannot; verified). Only this app's in-flight work is lost; queued jobs run
  * on a fresh child.
+ *
+ * The queue is FIFO with ONE exception (tx-hold.ts): while the child holds an
+ * explicit transaction open, autocommit writes stay queued and what can run
+ * without the write lock overtakes them.
  */
 export class AppWorker {
   readonly appKey: string;
@@ -45,12 +51,14 @@ export class AppWorker {
   private timer: NodeJS.Timeout | null = null;
   private nextId = 1;
   private closed = false;
+  private readonly txHold: TxHold<Job>;
 
   constructor(appKey: string, dbPath: string, workerPath: string, callbacks: AppWorkerCallbacks) {
     this.appKey = appKey;
     this.dbPath = dbPath;
     this.workerPath = workerPath;
     this.callbacks = callbacks;
+    this.txHold = new TxHold<Job>(appKey, (job) => this.onHoldTimeout(job));
   }
 
   exec(req: ExecRequest, timeoutMs: number): Promise<StatementResult> {
@@ -109,12 +117,13 @@ export class AppWorker {
     // Every handler ignores events from a child that is no longer current:
     // a deadline-killed child's late 'exit' (or a reply racing the SIGKILL)
     // must never touch the fresh child's state.
-    child.on("message", (reply: { id: number; ok: boolean; result?: StatementResult; code?: ErrorCode; message?: string }) => {
+    child.on("message", (reply: { id: number; ok: boolean; tx?: boolean; result?: StatementResult; code?: ErrorCode; message?: string }) => {
       if (this.child !== child) return;
       const job = this.inflight;
       if (!job || reply.id === 0) return;
       this.clearTimer();
       this.inflight = null;
+      this.txHold.set(reply.tx === true);
       if (reply.ok) job.resolve(reply.result);
       else job.reject(new ServiceError(reply.code ?? "SQL_ERROR", reply.message ?? "sql error"));
       this.pump();
@@ -133,7 +142,9 @@ export class AppWorker {
 
   private pump(): void {
     if (this.inflight || this.queue.length === 0 || this.closed) return;
-    const job = this.queue.shift()!;
+    const at = this.queue.findIndex((queued) => !this.txHold.holds(queued));
+    if (at === -1) return; // only writes held behind an open transaction
+    const job = this.queue.splice(at, 1)[0]!;
     this.inflight = job;
     const id = this.nextId++;
     job.msg.id = id;
@@ -154,6 +165,7 @@ export class AppWorker {
     const child = this.child;
     this.child = null;
     child?.kill("SIGKILL");
+    this.txHold.set(false, "worker-gone");
     this.callbacks.onTxInvalidated(this.appKey);
     job.reject(
       new ServiceError("QUERY_TIMEOUT", `query exceeded the ${job.timeoutMs}ms time limit and was aborted`),
@@ -164,6 +176,7 @@ export class AppWorker {
   private onChildDeath(err: ServiceError): void {
     this.clearTimer();
     this.child = null;
+    this.txHold.set(false, "worker-gone");
     this.callbacks.onTxInvalidated(this.appKey);
     const job = this.inflight;
     this.inflight = null;
@@ -171,8 +184,20 @@ export class AppWorker {
     this.pump();
   }
 
+  /** A held write gave up, and never runs. It is answered what the same write
+   *  was answered when it did its waiting inside the worker: the lock error
+   *  after the busy timeout — or its own deadline, if that one is shorter. */
+  private onHoldTimeout(job: Job): void {
+    const at = this.queue.indexOf(job);
+    if (at === -1) return;
+    this.queue.splice(at, 1);
+    if (job.timeoutMs >= BUSY_TIMEOUT_MS) return job.reject(new ServiceError("SQL_ERROR", BUSY_MESSAGE));
+    job.reject(new ServiceError("QUERY_TIMEOUT", `query exceeded the ${job.timeoutMs}ms time limit and was aborted`));
+  }
+
   private failAll(err: ServiceError): void {
     this.clearTimer();
+    this.txHold.set(false, "closed");
     const job = this.inflight;
     this.inflight = null;
     if (job) job.reject(err);

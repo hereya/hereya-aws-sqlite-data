@@ -19,6 +19,8 @@ export interface TestService {
   registryFile: string;
   dbDir: string;
   setRegistry: (entries: Array<{ org_id: string; app_id: string; status: string }>) => void;
+  /** The service's own parts, for a test that drives a background loop itself. */
+  parts: { cfg: Config; manager: AppManager; txRegistry: TxRegistry; limiter: Limiter };
   close: () => Promise<void>;
 }
 
@@ -147,6 +149,7 @@ export async function startTestService(
     baseUrl: `http://127.0.0.1:${address.port}`,
     registryFile,
     dbDir: cfg.dbDir,
+    parts: { cfg, manager, txRegistry, limiter },
     setRegistry: (entries) => {
       writeFileSync(registryFile, JSON.stringify(entries));
     },

@@ -77,6 +77,21 @@ test("TxRegistry sweep returns expired entries once", () => {
   assert.equal(reg.size, 0);
 });
 
+test("an expired transaction that a caller touches first is still handed to the sweep", () => {
+  let now = 0;
+  const reg = new TxRegistry({ idleMs: 100, maxMs: 1000, now: () => now });
+  const a = reg.create("k/a");
+  now = 200;
+  const expired = (err: unknown) => err instanceof ServiceError && err.code === "TX_EXPIRED";
+  assert.throws(() => reg.use(a.txId, "k/a"), expired);
+  // The sweep is the only thing that rolls it back in the worker: until then
+  // the app still has an open transaction, and the answer does not change.
+  assert.equal(reg.hasOpenTx("k/a"), true);
+  assert.throws(() => reg.use(a.txId, "k/a"), expired);
+  assert.deepEqual(reg.sweep().map((e) => e.txId), [a.txId]);
+  assert.equal(reg.hasOpenTx("k/a"), false);
+});
+
 test("TxRegistry deleteByAppKey drops all txs for the app", () => {
   const reg = new TxRegistry({ idleMs: 1000, maxMs: 10_000 });
   reg.create("k/a");

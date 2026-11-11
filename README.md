@@ -67,7 +67,7 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 |---|---|---|
 | `POST /query` | `{org_id, app_id, sql, params?, transactionId?}` | typed params/records mirror the RDS Data API `SqlParameter`/`Field` shapes; 1MiB response cap |
 | `POST /batch-execute` | `{org_id, app_id, sql, parameterSets, transactionId?}` | chunked inserts |
-| `POST /tx/begin\|commit\|rollback` | `{org_id, app_id, transactionId?}` | tx ids are pair-scoped; idle 15s / max 60s |
+| `POST /tx/begin\|commit\|rollback` | `{org_id, app_id, transactionId?}` | tx ids are pair-scoped; idle 15s / max 60s; autocommit writes of the app wait while one is open (below) |
 | `POST /admin/sync` | `{}` | reconcile served apps against the registry now |
 | `POST /admin/delete-app` | `{org_id, app_id}` | tears down the app's local db (close executor, drop from litestream, delete local file); **S3 replica retained**; used by the connector's `drop-schema` |
 | `POST /admin/move-app` | `{org_id, app_id, to_cell, force?}` | moves ONE app's database to another cell, live (see CLAUDE.md "Moving one database"). Answers `{status: "moved"\|"resumed", fromCell, toCell, version, pauseMs, reason?}`; **409 `MOVE_ABORTED`** when nothing was changed (open transaction, database above `MOVE_MAX_BYTES` without `force`). Any cell may be asked: the relay carries it to the holder |
@@ -75,6 +75,17 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 | `POST /admin/drain-status` | `{cell?}` | `{cells: [{cellId, instances, order, progress}]}` — one cell, or every cell the directory knows. `progress.state`: `draining` \| `empty` \| `blocked` (+ `held`, `moved`, `failed`, `skippedBig`, `inCloudMap`, `lastError`) |
 | `GET /stats?org_id&app_id` | – | `{dbSizeBytes}` (db + WAL on disk); used by the connector's `get-usage-report` |
 | `GET /health` | – | status, apps, litestream up/down, vec (sqlite-vec version) |
+
+**Explicit transactions.** One at a time per app (`/tx/begin` while one is open → 400). A
+transaction holds SQLite's write lock from BEGIN to COMMIT/ROLLBACK, across requests. While it is
+open, the app's **autocommit writes wait in the service's queue** and run, in arrival order, as
+soon as it ends (commit, rollback, or expiry after 15 s idle / 60 s in total); reads and the
+transaction's own statements are not delayed. A write still waiting after the busy timeout (5 s)
+is answered `400 SQL_ERROR "database is locked"` — the answer it always got — and is not run.
+(They used to be handed to the app's single executor
+process, where they blocked the transaction itself for the busy timeout and then failed
+`database is locked` — see CLAUDE.md "An open transaction holds the app's autocommit writes".)
+Journal: `{"type":"tx-hold", appKey, event, held, waitedMs}`.
 
 **Org database quota.** `/query` and `/batch-execute` refuse a write with `DB_QUOTA_EXCEEDED`
 (429) once the org's databases reach `maxDbMb`, read off the registry's `sk='org'` row (dilaya.eu
