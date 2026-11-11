@@ -654,6 +654,77 @@ requests): **0** such 503 on `POST /query`. It takes > 8 apps inside the same fe
 the fleet's traffic has not done that yet. The 2 clients without a retry (frontend authorizer,
 OTP/passkey Lambda) are why it was fixed anyway.
 
+## An open transaction holds the app's autocommit writes (`service/src/worker-host/tx-hold.ts`)
+
+A worker is ONE synchronous process with two connections: `autoConn` for autocommit statements,
+`txConn` for an explicit transaction (`BEGIN IMMEDIATE`). A transaction spans several requests
+(`/tx/begin`, statements carrying the `transactionId`, `/tx/commit`), and between two of them
+`txConn` keeps the write lock while the worker sits idle.
+
+**The hazard.** An autocommit WRITE handed to the worker in that gap ran on `autoConn`, met the
+lock and slept in SQLite's busy handler — inside the only process that could run the
+transaction's next statement or its COMMIT. Nothing could end that wait but the busy timeout
+(5 s, nominal): the write ALWAYS failed `database is locked`, the transaction was delayed as long,
+and so was every other request of the app queued behind it — reads included, because of the
+serial queue and not because of SQLite (WAL never blocks a reader).
+
+**The rule.** `AppWorker`'s queue is FIFO with one exception: while the worker reports `txConn`
+inside a transaction, a job that is an autocommit write stays in the queue and whatever needs no
+write lock overtakes it.
+
+- **What runs as before**: BEGIN/COMMIT/ROLLBACK, every statement carrying the `transactionId`,
+  and autocommit reads.
+- **What is held**: an autocommit statement for which `sqlMutates` (`fence.ts`) is true. A
+  statement is a read only when it is RECOGNISED as one (`SELECT`/`EXPLAIN`/`PRAGMA` head, a
+  `WITH` not followed by INSERT/UPDATE/REPLACE/DELETE), so anything unrecognised is held:
+  `WITH … INSERT`, `VACUUM`, `ANALYZE`, a script with one write in it. A `/batch-execute` without
+  `transactionId` is N such statements. ⚠ `CREATE … IF NOT EXISTS` is a read for `sqlMutates`
+  and is NOT held, on purpose: on an existing object it takes no lock and has always passed
+  during a transaction, and it is what system tables run before every read. When it does have to
+  create the object while a transaction is open, it still meets the lock, as before.
+- **"Open" is what the WORKER says**, not what the tx registry believes: every reply carries
+  `tx` (`txConn.isTransaction`). It is the lock that matters, and the two can differ — a COMMIT
+  that failed (deferred foreign key) leaves the lock held, a dead worker has dropped it.
+- **Order.** Held writes keep their place in the queue: once the transaction is over the queue is
+  taken from its head again, so they run in arrival order, before anything that arrived after
+  them and has not run yet. The only reordering: a read (or a transaction statement) that arrived
+  after a held write may run before it. A caller that awaits its write before reading still reads
+  its own write.
+- **What releases them**: COMMIT or ROLLBACK answered by the worker; the sweep's ROLLBACK of an
+  expired transaction (`TX_IDLE_MS`, `TX_MAX_MS`); the shutdown's ROLLBACK; the worker killed on a
+  deadline or dying (its transaction died with it — the held writes run on the fresh process).
+  When the worker is CLOSED (app deleted, moved, evicted, service stopping) they are answered
+  `503 UNAVAILABLE "app is shutting down"`, like any queued job. A worker with held writes is
+  `busy`, so the pool never evicts it.
+- **Bound.** A held write waits at most its own time limit (`SQL_TIMEOUT_MS`), then is answered
+  `408 QUERY_TIMEOUT` ("waited … and was not run") and removed from the queue: it never runs, and
+  the worker is NOT killed (a deadline on a RUNNING job kills it; this one never started). It
+  keeps its limiter slot while it waits, as a queued job always did.
+- **Journal**: one line per episode, never the SQL —
+  `{"type":"tx-hold","appKey","event","held","waitedMs"}`, `event` ∈ `tx-ended` | `worker-gone` |
+  `closed` (`held` = how many were let go, `waitedMs` = the longest wait) | `timeout` (one write
+  gave up). No line = no write ever waited behind a transaction.
+- **No transaction open = nothing changes**: one boolean test per dispatched job, the statement
+  is not even looked at (measured: no difference outside run-to-run noise on ~25 µs per job).
+
+**Found on the way, same lock, fixed with it** (`tx.ts`): a transaction that had expired and was
+then touched by its caller BEFORE the 2 s sweep was deleted from the registry on that path — and
+only the sweep rolls a transaction back in the worker. The worker stayed inside a transaction
+nobody knew about: every autocommit write of that app failed after the busy timeout, and
+`/tx/begin` answered `cannot start a transaction within a transaction`, until the process was
+closed. An expired transaction now stays in the registry until the sweep collects it; meanwhile
+its id keeps answering `TX_EXPIRED`.
+
+⚠ Known and left as is: a caller that opens a transaction and then AWAITS an autocommit write of
+its own before going on. That write used to fail after the busy timeout and the transaction went
+on. It is now held until the transaction ends — which, since its caller is waiting, means the idle
+limit: the transaction is rolled back, then the write runs. Do not issue autocommit writes from
+inside a transaction's flow; put them in the transaction or after it.
+
+Tests: `service/test/integration/server/tx-write-stall.test.ts` (the scenario over HTTP — its
+first version, on the unfixed service, measured the stall), `service/test/integration/tx-hold-worker.test.ts`
+(each way a transaction can end, on the real process), `service/test/unit/tx-hold.test.ts`.
+
 ## One database joins or leaves — the daemon keeps running (2026-09-20, `t_dbmove_p1_ls_socket`)
 
 Every section below that says "bounce" describes what a config change USED to cost: the config

@@ -40,6 +40,9 @@ type WorkerMessage = ExecMessage | ControlMessage;
 interface WorkerReply {
   id: number;
   ok: boolean;
+  /** The transaction connection is inside a transaction, i.e. it holds the
+   *  write lock: the parent keeps autocommit writes back (worker-host/tx-hold.ts). */
+  tx?: boolean;
   result?: StatementResult;
   code?: ErrorCode;
   message?: string;
@@ -175,12 +178,13 @@ function handle(msg: WorkerMessage): WorkerReply {
 
 process.on("message", (msg: WorkerMessage) => {
   try {
-    process.send!(handle(msg));
+    process.send!({ ...handle(msg), tx: txConn?.isTransaction === true });
   } catch (err) {
     const isServiceShaped = typeof err === "object" && err !== null && "code" in err && "status" in err;
     const reply: WorkerReply = {
       id: msg.id,
       ok: false,
+      tx: txConn?.isTransaction === true,
       code: isServiceShaped ? ((err as { code: ErrorCode }).code) : "SQL_ERROR",
       message: err instanceof Error ? err.message : String(err),
     };

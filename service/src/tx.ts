@@ -45,7 +45,9 @@ export class TxRegistry {
     }
     const t = this.now();
     if (this.isExpired(entry, t)) {
-      this.entries.delete(txId);
+      // NOT forgotten here: only the sweep rolls a transaction back in the
+      // worker. Deleting it on this path left the worker inside a transaction
+      // nobody knew about — its write lock held until the process was closed.
       throw new ServiceError("TX_EXPIRED", "transaction expired and was rolled back");
     }
     entry.lastTouch = t;
