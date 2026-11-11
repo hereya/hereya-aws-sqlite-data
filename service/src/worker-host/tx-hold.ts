@@ -18,8 +18,12 @@
 //   * held writes keep their place: once the transaction is over the queue is
 //     taken from its head again, so they run in arrival order, before anything
 //     that arrived after them and has not run yet;
-//   * a held write does not wait for ever: after its own time limit it is
-//     answered QUERY_TIMEOUT and removed — it never runs.
+//   * a held write waits at most the busy timeout — as long as it used to
+//     sleep in the worker — and is then answered the same "database is
+//     locked" and removed: it never runs. The fix is never worse than what it
+//     replaces: a caller that awaits an autocommit write INSIDE its own
+//     transaction gets the old error after the old delay, and its transaction
+//     goes on.
 //
 // "Open" is what the WORKER says after each job (sql-worker.ts `tx`), not what
 // the tx registry believes: it is the lock that matters, and the two can
@@ -30,6 +34,7 @@
 // NOT EXISTS` is a read there, and stays one here: on an existing object it
 // takes no lock and has always passed during a transaction. When it does have
 // to create the object it still meets the lock, as before.
+import { BUSY_TIMEOUT_MS } from "../busy-timeout.ts";
 import { sqlMutates } from "../fence.ts";
 
 export interface HoldableJob {
@@ -74,7 +79,7 @@ export class TxHold<J extends HoldableJob> {
     if (!this.open) return false;
     if (this.held.has(job)) return true;
     if (!isAutocommitWrite(job.msg)) return false;
-    const timer = setTimeout(() => this.expire(job), job.timeoutMs);
+    const timer = setTimeout(() => this.expire(job), Math.min(job.timeoutMs, BUSY_TIMEOUT_MS));
     timer.unref();
     this.held.set(job, { since: Date.now(), timer });
     return true;

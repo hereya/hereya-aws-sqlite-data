@@ -5,6 +5,7 @@
 // guaranteed to stop it. WAL mode makes that crash-safe (the uncommitted
 // transaction rolls back on reopen).
 import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { BUSY_TIMEOUT_MS } from "./busy-timeout.ts";
 import type { ErrorCode } from "./errors.ts";
 import {
   assertResponseSize,
@@ -68,7 +69,7 @@ function openConn(): DatabaseSync {
   const db = new DatabaseSync(dbPath!, { allowExtension: true });
   loadVec(db, vec0Path);
   db.exec("PRAGMA journal_mode=WAL");
-  db.exec("PRAGMA busy_timeout=5000");
+  db.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`);
   db.exec("PRAGMA foreign_keys=ON");
   db.exec("PRAGMA synchronous=NORMAL");
   // A checkpointed WAL is truncated back to this, instead of keeping the

@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from "node:child_process";
+import { BUSY_MESSAGE, BUSY_TIMEOUT_MS } from "../busy-timeout.ts";
 import { ServiceError, type ErrorCode } from "../errors.ts";
 import type { SqliteBindable, StatementResult } from "../marshalling.ts";
 import { TxHold } from "./tx-hold.ts";
@@ -183,14 +184,15 @@ export class AppWorker {
     this.pump();
   }
 
-  /** A held write ran out of time: answered like a timed-out query, and never run. */
+  /** A held write gave up, and never runs. It is answered what the same write
+   *  was answered when it did its waiting inside the worker: the lock error
+   *  after the busy timeout — or its own deadline, if that one is shorter. */
   private onHoldTimeout(job: Job): void {
     const at = this.queue.indexOf(job);
     if (at === -1) return;
     this.queue.splice(at, 1);
-    job.reject(
-      new ServiceError("QUERY_TIMEOUT", `query waited ${job.timeoutMs}ms for this app's open transaction to end and was not run`),
-    );
+    if (job.timeoutMs >= BUSY_TIMEOUT_MS) return job.reject(new ServiceError("SQL_ERROR", BUSY_MESSAGE));
+    job.reject(new ServiceError("QUERY_TIMEOUT", `query exceeded the ${job.timeoutMs}ms time limit and was aborted`));
   }
 
   private failAll(err: ServiceError): void {

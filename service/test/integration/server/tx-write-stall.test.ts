@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { startTxSweeper } from "../../../src/boot/loops.ts";
+import { BUSY_TIMEOUT_MS } from "../../../src/busy-timeout.ts";
 import { call, startTestService, type TestService } from "../../helpers.ts";
 
 const A1 = { org_id: "org-a", app_id: "app-1" };
@@ -9,7 +10,7 @@ const A2 = { org_id: "org-a", app_id: "app-2" };
 
 // What the same write used to cost: the worker's busy timeout (a constant in
 // sql-worker.ts), spent inside the worker with everything else queued behind.
-const BUSY_MS = 5000;
+const BUSY_MS = BUSY_TIMEOUT_MS;
 /** Generous on purpose: "at once" must hold on a loaded machine and still be far from BUSY_MS. */
 const SOON_MS = 2000;
 
@@ -188,7 +189,7 @@ for (const [limit, overrides] of [
   });
 }
 
-test("a held write that runs out of its own time is answered 408 QUERY_TIMEOUT and never runs", async () => {
+test("a held write whose own deadline is shorter than the busy timeout is answered by that deadline, and never runs", async () => {
   const svc = await startTestService({ sqlTimeoutMs: 400 });
   try {
     const transactionId = await openTx(svc);
@@ -196,7 +197,7 @@ test("a held write that runs out of its own time is answered 408 QUERY_TIMEOUT a
     assert.equal(w.status, 408, JSON.stringify(w.body));
     assert.deepEqual(w.body.error, {
       code: "QUERY_TIMEOUT",
-      message: "query waited 400ms for this app's open transaction to end and was not run",
+      message: "query exceeded the 400ms time limit and was aborted",
     });
     assert.ok(w.ms >= 390, `answered after ${w.ms}ms`);
     assert.equal((await call(svc.baseUrl, "/tx/commit", { ...A1, transactionId })).status, 200, "the transaction survived it");

@@ -80,8 +80,9 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 transaction holds SQLite's write lock from BEGIN to COMMIT/ROLLBACK, across requests. While it is
 open, the app's **autocommit writes wait in the service's queue** and run, in arrival order, as
 soon as it ends (commit, rollback, or expiry after 15 s idle / 60 s in total); reads and the
-transaction's own statements are not delayed. A write that waits longer than the SQL time limit is
-answered `408 QUERY_TIMEOUT` and is not run. (They used to be handed to the app's single executor
+transaction's own statements are not delayed. A write still waiting after the busy timeout (5 s)
+is answered `400 SQL_ERROR "database is locked"` — the answer it always got — and is not run.
+(They used to be handed to the app's single executor
 process, where they blocked the transaction itself for the busy timeout and then failed
 `database is locked` — see CLAUDE.md "An open transaction holds the app's autocommit writes".)
 Journal: `{"type":"tx-hold", appKey, event, held, waitedMs}`.

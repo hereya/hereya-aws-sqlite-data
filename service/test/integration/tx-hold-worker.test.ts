@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
+import { BUSY_TIMEOUT_MS } from "../../src/busy-timeout.ts";
 import { ServiceError } from "../../src/errors.ts";
 import { AppWorker, resolveWorkerPath, type ExecRequest } from "../../src/worker-host.ts";
 
@@ -87,7 +88,7 @@ test("rollback releases the held writes too", async () => {
   }
 });
 
-test("a held write whose own time runs out is answered QUERY_TIMEOUT and never runs — the worker is NOT killed", async () => {
+test("a held write whose own deadline is shorter than the busy timeout is answered QUERY_TIMEOUT and never runs — the worker is NOT killed", async () => {
   const { worker, rows, invalidated, held } = await rig();
   try {
     await worker.control("begin", T);
@@ -97,7 +98,7 @@ test("a held write whose own time runs out is answered QUERY_TIMEOUT and never r
       assert.ok(err instanceof ServiceError);
       assert.equal(err.code, "QUERY_TIMEOUT");
       assert.equal(err.status, 408);
-      assert.match(err.message, /waited 300ms .* was not run/);
+      assert.equal(err.message, "query exceeded the 300ms time limit and was aborted");
       return true;
     });
     assert.ok(Date.now() - startedAt >= 290);
@@ -176,6 +177,18 @@ test("a COMMIT that fails leaves the lock held: the writes stay held until the t
     await worker.control("rollback", T);
     await write;
     assert.deepEqual(await rows(), ["auto"]);
+  } finally {
+    await worker.close();
+  }
+});
+
+test("the worker's busy timeout IS the constant the hold is bounded by", async () => {
+  const { worker } = await rig();
+  try {
+    for (const useTx of [false, true]) {
+      const res = await worker.exec(req("PRAGMA busy_timeout", useTx), T);
+      assert.equal(Number((res.records![0]![0] as { longValue: number }).longValue), BUSY_TIMEOUT_MS);
+    }
   } finally {
     await worker.close();
   }

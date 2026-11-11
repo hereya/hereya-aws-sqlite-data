@@ -696,10 +696,16 @@ write lock overtakes it.
   When the worker is CLOSED (app deleted, moved, evicted, service stopping) they are answered
   `503 UNAVAILABLE "app is shutting down"`, like any queued job. A worker with held writes is
   `busy`, so the pool never evicts it.
-- **Bound.** A held write waits at most its own time limit (`SQL_TIMEOUT_MS`), then is answered
-  `408 QUERY_TIMEOUT` ("waited … and was not run") and removed from the queue: it never runs, and
-  the worker is NOT killed (a deadline on a RUNNING job kills it; this one never started). It
-  keeps its limiter slot while it waits, as a queued job always did.
+- **Bound: the busy timeout, and the old answer.** A held write waits at most `BUSY_TIMEOUT_MS`
+  (`service/src/busy-timeout.ts`, 5 s — the ONE constant the worker's `PRAGMA busy_timeout` is
+  also set from, so the two cannot drift), then is answered exactly what the stalled write was
+  answered: `400 SQL_ERROR "database is locked"`, same refusal line. It is removed from the
+  queue and never runs; the worker is NOT killed. So the rule is never worse than what it
+  replaces: a write that could not have succeeded fails the same way after the same delay —
+  without having blocked the worker meanwhile. (A request whose own deadline is shorter than the
+  busy timeout is answered by that deadline, `408 QUERY_TIMEOUT`; no stack is configured so.)
+  It keeps its limiter slot while it waits, as a queued job always did — at most the busy
+  timeout each, side by side, where the stalled writes used to queue up 5 s apiece.
 - **Journal**: one line per episode, never the SQL —
   `{"type":"tx-hold","appKey","event","held","waitedMs"}`, `event` ∈ `tx-ended` | `worker-gone` |
   `closed` (`held` = how many were let go, `waitedMs` = the longest wait) | `timeout` (one write
@@ -715,11 +721,13 @@ nobody knew about: every autocommit write of that app failed after the busy time
 closed. An expired transaction now stays in the registry until the sweep collects it; meanwhile
 its id keeps answering `TX_EXPIRED`.
 
-⚠ Known and left as is: a caller that opens a transaction and then AWAITS an autocommit write of
-its own before going on. That write used to fail after the busy timeout and the transaction went
-on. It is now held until the transaction ends — which, since its caller is waiting, means the idle
-limit: the transaction is rolled back, then the write runs. Do not issue autocommit writes from
-inside a transaction's flow; put them in the transaction or after it.
+**The self-inflicted case is why the bound is the busy timeout.** A caller that opens a
+transaction and then AWAITS an autocommit write of its own before going on can never be served:
+nobody else will end that transaction. Held until the transaction ended, that write would have
+waited for the idle limit — the caller would have lost its whole transaction, 15 s later. With
+the bound it sees what it always saw: `database is locked` after the busy timeout, and its
+transaction goes on and commits. `service/test/integration/server/tx-self-write.test.ts` pins
+that outcome, and passes unchanged on the service as it was before the rule.
 
 Tests: `service/test/integration/server/tx-write-stall.test.ts` (the scenario over HTTP — its
 first version, on the unfixed service, measured the stall), `service/test/integration/tx-hold-worker.test.ts`
