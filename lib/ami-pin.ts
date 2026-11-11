@@ -22,8 +22,10 @@
 export const PINNED_AMI_REGION = "eu-west-1";
 
 /**
- * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20261016.0`,
- * published 2026-10-16, rolled 2026-10-18 by DRAINING (previous pin:
+ * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20261109.0`,
+ * published 2026-11-04, rolled together with a service change, so by handover
+ * rather than by draining (previous pin: `ami-0e942ce8509bb33b6`,
+ * `al2023-ami-2023.12.20261016.0` — the drain roll of 2026-10-18;
  * `ami-0afb612d2bb2a041d`, `al2023-ami-2023.12.20261012.0` — the drain roll of
  * 2026-10-13; `ami-043de3c7713de1480`, `al2023-ami-2023.12.20260930.0` — the drain roll of
  * 2026-10-07; `ami-06f589fd2af7a9fc7` on 2026-09-20; `ami-0535b4996339a5410` on 2026-09-18; `ami-094d17305e4426f8b` on 2026-09-12,
@@ -44,12 +46,12 @@ export const PINNED_AMI_REGION = "eu-west-1";
  * empty, drain back, `vmCount=1` (CLAUDE.md, "Rolling the OS without a cut").
  */
 export const PINNED_AMI_IDS: Readonly<Record<string, string>> = {
-  "eu-west-1": "ami-0e942ce8509bb33b6",
+  "eu-west-1": "ami-05722456813fabe7c",
   // The SAME image in Montréal (t_rca_p0_infra, 2026-10-26): name
-  // `al2023-ami-2023.12.20261016.0-kernel-6.1-arm64`, owner amazon
+  // `al2023-ami-2023.12.20261109.0-kernel-6.1-arm64`, owner amazon
   // (137112412989), read with `ec2 describe-images`. A roll bumps EVERY entry
   // to the same image name (`npm run check:ami -- --region <r>` per region).
-  "ca-central-1": "ami-0658cdb60624f22b1",
+  "ca-central-1": "ami-01ae0b40f5190b162",
 };
 
 /** The eu-west-1 pin — the region `check:ami` measures by default. */
