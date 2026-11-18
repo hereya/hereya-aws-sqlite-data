@@ -739,7 +739,7 @@ Every section below that says "bounce" describes what a config change USED to co
 was rewritten and the single litestream process restarted, suspending replication ~1 s for
 **every** database on the VM — at each app creation, promotion, eviction and removal.
 
-Litestream 0.5.17 (the pinned binary) has a **control socket**. `buildConfig` now enables it
+Litestream 0.5.17 (pinned then; 0.5.18 since 0.1.65, same socket CLI) has a **control socket**. `buildConfig` now enables it
 (`socket: {enabled, path}`), and `Litestream.apply(apps)` — what the four callers use instead of
 `bounce` — diffs the wanted set against what the daemon was last told and touches ONLY what
 changed: `register -replica <url>` for a database that joins, `stop` then `unregister` for one
@@ -759,7 +759,7 @@ What stays exactly as it was, on purpose:
   **a fleet that logs `socket-fallback` regularly has silently gone back to the old cost.**
 - **`SyncState.withConfig`** still serializes decide + mutate + apply. The socket removes the
   pause, not the race.
-- **Zero databases = no daemon.** With an empty list and a socket, 0.5.17 stays alive but logs
+- **Zero databases = no daemon.** With an empty list and a socket, 0.5.17 (and 0.5.18) stays alive but logs
   `level=ERROR msg="no databases specified"`, and any ERROR line flips `childHealthy` (hence
   the heartbeat). So the first database starts the process and the last one stops it — nobody
   else is there to disturb.
