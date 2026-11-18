@@ -77,6 +77,10 @@ WantedBy=multi-user.target
 UNITEOF
 
 systemctl daemon-reload
+# update-motd runs dnf (~200 MB for 30 s) for a MOTD nobody reads: the only dip
+# in MemoryAvailableBytes (test/user-data-motd.test.ts). \`|| true\`: a missing
+# unit on a future AMI must not abort the boot.
+systemctl mask --now update-motd.timer || true
 systemctl enable --now dilaya-data-api.service
 echo "dilaya-data-api bootstrap complete"
 `;
