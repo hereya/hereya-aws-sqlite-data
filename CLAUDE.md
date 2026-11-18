@@ -116,7 +116,10 @@ runbook; this file is the working-agreement layer for agents.
     (`PINNED_AMI_IDS`, t_rca_p0_infra: eu-west-1 + ca-central-1, the SAME image name in each), the
     stack takes its region's entry, and a region without one fails at synth rather than producing
     an ASG that can't launch. A roll bumps EVERY entry to the same image (`npm run check:ami --
-    --region <r>` per region; it compares that region's pin). With this, the ONLY things
+    --region <r>` per region, or `--all-regions`; it compares that region's pin). The region is ONE
+    value for pin, published image and instance lookup — `--region`, else `AWS_REGION`, else
+    `AWS_DEFAULT_REGION`, else eu-west-1 (`lib/ami-region.ts`). Until 2026-11-18 `AWS_REGION` was
+    ignored: a Canadian `--stack` was searched for in eu-west-1 and its instance never checked. With this, the ONLY things
     that touch the production databases are a new service, a bumped pin, and a changed
     `rootVolumeGb` (invariant 13) — all three deliberate.
 13. **The root volume size is ours, not the AMI's.** Until 2026-08-25 the launch template carried

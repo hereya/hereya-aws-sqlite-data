@@ -159,8 +159,13 @@ file:
 
 ```bash
 npm run check:ami                  # pin vs the published AL2023 — needs no EC2 permission
-npm run check:ami -- --stack <n>   # also check the image the instance is actually running
+npm run check:ami -- --stack <n>   # also check the image the instance(s) actually run
+npm run check:ami -- --all-regions # every pinned region, every stack of this package found there
 ```
+
+One region per run, for the pin, the published image AND the instance lookup: `--region`, else
+`AWS_REGION`, else `AWS_DEFAULT_REGION`, else eu-west-1. A `--stack` that is not in that region is
+reported as such, naming the region it is in.
 
 Exit codes are the interface: **0** in sync · **1** a newer AL2023 exists (or the instance is on
 neither — a bumped pin that was published but never rolled out, which a deploy fixes) · **2** could
