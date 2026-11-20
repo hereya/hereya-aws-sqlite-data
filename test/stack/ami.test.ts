@@ -76,8 +76,8 @@ function imageIdIn(region: string, id: string): unknown {
 }
 
 test("each pinned region gets its own pin — eu-west-1 unchanged, ca-central-1 the same image's Montréal id", () => {
-  assert.equal(imageIdIn("eu-west-1", "TestStackAmiEu"), "ami-0d3c2938b1c27d685");
-  assert.equal(imageIdIn("ca-central-1", "TestStackAmiCa"), "ami-0302e224891211100");
+  assert.equal(imageIdIn("eu-west-1", "TestStackAmiEu"), "ami-08013e14eb49164c6");
+  assert.equal(imageIdIn("ca-central-1", "TestStackAmiCa"), "ami-0c1d4c411d1c0569f");
 });
 
 test("an unpinned region is refused at synth, with what to do", () => {
@@ -94,7 +94,7 @@ test("an explicit amiId still works in an unpinned region", () => {
 });
 
 test("another region's pin passed as amiId is refused (it does not exist here)", () => {
-  process.env.amiId = "ami-0d3c2938b1c27d685";
+  process.env.amiId = "ami-08013e14eb49164c6";
   try {
     assert.throws(() => imageIdIn("ca-central-1", "TestStackAmiWrongRegion"), /eu-west-1 and does not exist in ca-central-1/);
   } finally {

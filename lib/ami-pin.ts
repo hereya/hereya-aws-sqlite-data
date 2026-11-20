@@ -22,10 +22,10 @@
 export const PINNED_AMI_REGION = "eu-west-1";
 
 /**
- * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20261117.0`,
- * published 2026-11-17, rolled together with the Litestream 0.5.18 bump and the
- * update-motd mask, so by handover rather than by draining (previous pin:
- * `ami-05722456813fabe7c`, `al2023-ami-2023.12.20261109.0` — the handover roll
+ * AL2023, kernel 6.1, arm64, eu-west-1: `al2023-ami-2023.12.20261120.0`,
+ * published 2026-11-20, rolled by handover (previous pin: `ami-0d3c2938b1c27d685`,
+ * `al2023-ami-2023.12.20261117.0` — the handover roll of 2026-11-18 with the
+ * Litestream 0.5.18 bump and the update-motd mask; `ami-05722456813fabe7c`, `al2023-ami-2023.12.20261109.0` — the handover roll
  * of 2026-11-11 with a service change; `ami-0e942ce8509bb33b6`,
  * `al2023-ami-2023.12.20261016.0` — the drain roll of 2026-10-18;
  * `ami-0afb612d2bb2a041d`, `al2023-ami-2023.12.20261012.0` — the drain roll of
@@ -48,12 +48,12 @@ export const PINNED_AMI_REGION = "eu-west-1";
  * empty, drain back, `vmCount=1` (CLAUDE.md, "Rolling the OS without a cut").
  */
 export const PINNED_AMI_IDS: Readonly<Record<string, string>> = {
-  "eu-west-1": "ami-0d3c2938b1c27d685",
+  "eu-west-1": "ami-08013e14eb49164c6",
   // The SAME image in Montréal (t_rca_p0_infra, 2026-10-26): name
-  // `al2023-ami-2023.12.20261117.0-kernel-6.1-arm64`, owner amazon
+  // `al2023-ami-2023.12.20261120.0-kernel-6.1-arm64`, owner amazon
   // (137112412989), read with `ec2 describe-images`. A roll bumps EVERY entry
   // to the same image name (`npm run check:ami -- --region <r>` per region).
-  "ca-central-1": "ami-0302e224891211100",
+  "ca-central-1": "ami-0c1d4c411d1c0569f",
 };
 
 /** The eu-west-1 pin — the region `check:ami` measures by default. */
