@@ -143,7 +143,7 @@ test("a second /tx/begin while one is open is refused as before, held write or n
     await sleep(50);
     const second = await call(svc.baseUrl, "/tx/begin", A1);
     assert.equal(second.status, 400);
-    assert.deepEqual(second.body.error, { code: "BAD_REQUEST", message: "this app already has an open transaction (one at a time)" });
+    assert.deepEqual(second.body.error, { code: "BAD_REQUEST", message: "this app already has an open transaction (one at a time)", kind: "OTHER" });
 
     await call(svc.baseUrl, "/query", { ...A2, sql: "CREATE TABLE t (who TEXT)" });
     const other = await timed(svc.baseUrl, "/query", { ...A2, sql: "INSERT INTO t VALUES ('other app')" });
@@ -198,6 +198,7 @@ test("a held write whose own deadline is shorter than the busy timeout is answer
     assert.deepEqual(w.body.error, {
       code: "QUERY_TIMEOUT",
       message: "query exceeded the 400ms time limit and was aborted",
+      kind: "TIMEOUT",
     });
     assert.ok(w.ms >= 390, `answered after ${w.ms}ms`);
     assert.equal((await call(svc.baseUrl, "/tx/commit", { ...A1, transactionId })).status, 200, "the transaction survived it");

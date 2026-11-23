@@ -33,7 +33,7 @@ test("a caller awaiting an autocommit write inside its own transaction: the writ
     const write = await call(svc.baseUrl, "/query", { ...A1, sql: "INSERT INTO t VALUES ('autocommit')" });
     const writeMs = Date.now() - startedAt;
     assert.equal(write.status, 400, JSON.stringify(write.body));
-    assert.deepEqual(write.body, { error: { code: "SQL_ERROR", message: "database is locked" } });
+    assert.deepEqual(write.body, { error: { code: "SQL_ERROR", message: "database is locked", kind: "LOCKED" } });
     assert.ok(writeMs >= BUSY_MS - 100, `the write was answered after ${writeMs}ms`);
     const audit = lines.map((l) => JSON.parse(l)).filter((l) => l.type === "audit" && l.allowed === false);
     assert.equal(audit.length, 1);
