@@ -117,7 +117,7 @@ export class AppWorker {
     // Every handler ignores events from a child that is no longer current:
     // a deadline-killed child's late 'exit' (or a reply racing the SIGKILL)
     // must never touch the fresh child's state.
-    child.on("message", (reply: { id: number; ok: boolean; tx?: boolean; result?: StatementResult; code?: ErrorCode; message?: string }) => {
+    child.on("message", (reply: { id: number; ok: boolean; tx?: boolean; result?: StatementResult; code?: ErrorCode; message?: string; sqliteCode?: number }) => {
       if (this.child !== child) return;
       const job = this.inflight;
       if (!job || reply.id === 0) return;
@@ -125,7 +125,7 @@ export class AppWorker {
       this.inflight = null;
       this.txHold.set(reply.tx === true);
       if (reply.ok) job.resolve(reply.result);
-      else job.reject(new ServiceError(reply.code ?? "SQL_ERROR", reply.message ?? "sql error"));
+      else job.reject(new ServiceError(reply.code ?? "SQL_ERROR", reply.message ?? "sql error", reply.sqliteCode));
       this.pump();
     });
     child.on("error", (err) => {

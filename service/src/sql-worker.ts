@@ -47,6 +47,8 @@ interface WorkerReply {
   result?: StatementResult;
   code?: ErrorCode;
   message?: string;
+  /** SQLite's extended result code (node:sqlite `errcode`), when there is one. */
+  sqliteCode?: number;
 }
 
 const dbPath = process.argv[2];
@@ -188,6 +190,7 @@ process.on("message", (msg: WorkerMessage) => {
       tx: txConn?.isTransaction === true,
       code: isServiceShaped ? ((err as { code: ErrorCode }).code) : "SQL_ERROR",
       message: err instanceof Error ? err.message : String(err),
+      sqliteCode: typeof (err as { errcode?: unknown })?.errcode === "number" ? (err as { errcode: number }).errcode : undefined,
     };
     process.send!(reply);
   }

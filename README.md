@@ -76,6 +76,35 @@ connector Lambda ──SigV4──▶ API Gateway (HTTP API, IAM auth)
 | `GET /stats?org_id&app_id` | – | `{dbSizeBytes}` (db + WAL on disk); used by the connector's `get-usage-report` |
 | `GET /health` | – | status, apps, litestream up/down, vec (sqlite-vec version) |
 
+**Error answers.** Every refusal is `{"error": {"code", "message", "kind"}}` with the HTTP status of
+its `code`. `code` and `message` are what they always were — for `SQL_ERROR` the message is SQLite's
+own text, verbatim. `kind` (since 0.1.67) is an engine-neutral name for what went wrong, so a client
+can tell a missing table from a duplicate key without matching SQLite's wording
+(`service/src/error-kind.ts`). For a statement error it comes from SQLite's extended result code when
+the executor has one, else from the message:
+
+| `kind` | from |
+|---|---|
+| `TABLE_NOT_FOUND` | "no such table" |
+| `COLUMN_NOT_FOUND` | "no such column", "has no column named" |
+| `UNIQUE_VIOLATION` | `SQLITE_CONSTRAINT_UNIQUE` / `_PRIMARYKEY` / `_ROWID`; "UNIQUE constraint failed" |
+| `FOREIGN_KEY_VIOLATION` | `SQLITE_CONSTRAINT_FOREIGNKEY`; "FOREIGN KEY constraint failed" |
+| `NOT_NULL_VIOLATION` | `SQLITE_CONSTRAINT_NOTNULL`; "NOT NULL constraint failed" |
+| `CHECK_VIOLATION` | `SQLITE_CONSTRAINT_CHECK`; "CHECK constraint failed" |
+| `ALREADY_EXISTS` | "already exists", "there is already a … named", "duplicate column name" |
+| `SYNTAX` | "syntax error", "incomplete input", "unrecognized token" |
+| `LOCKED` | `SQLITE_BUSY` / `SQLITE_LOCKED` (and extensions); "database is locked" — incl. a write held past the busy timeout behind an open transaction |
+| `READ_ONLY` | `SQLITE_READONLY` (and extensions); "readonly database" |
+| `TYPE_MISMATCH` | `SQLITE_MISMATCH`, `SQLITE_CONSTRAINT_DATATYPE`; "datatype mismatch", "cannot store … value in … column" |
+| `QUOTA_EXCEEDED` | code `DB_QUOTA_EXCEEDED` |
+| `TIMEOUT` | code `QUERY_TIMEOUT` |
+| `FORBIDDEN_STATEMENT` | code `SQL_FORBIDDEN` (the SQL guard) |
+| `OTHER` | anything else, including every refusal that is not about a statement (auth, throttling, transactions, availability) |
+
+The set may grow; a client must treat an unknown `kind` as `OTHER`. A relayed answer is the
+holder's own body, so during a roll an older cell's answer may lack `kind` — fall back to `code` +
+`message` then.
+
 **Explicit transactions.** One at a time per app (`/tx/begin` while one is open → 400). A
 transaction holds SQLite's write lock from BEGIN to COMMIT/ROLLBACK, across requests. While it is
 open, the app's **autocommit writes wait in the service's queue** and run, in arrival order, as

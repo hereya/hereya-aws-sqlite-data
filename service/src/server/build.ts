@@ -197,7 +197,8 @@ export function buildServer(deps: ServerDeps): Server {
           : {}),
         ms: Date.now() - started,
       });
-      send(res, svcErr.status, { error: { code: svcErr.code, message: svcErr.message } }, svcErr.retryAfterS);
+      // `kind` is additive: code and message are exactly what they always were.
+      send(res, svcErr.status, { error: { code: svcErr.code, message: svcErr.message, kind: svcErr.kind } }, svcErr.retryAfterS);
     }
   }
 }

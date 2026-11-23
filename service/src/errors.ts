@@ -1,3 +1,5 @@
+import { errorKind, type ErrorKind } from "./error-kind.ts";
+
 export type ErrorCode =
   | "BAD_REQUEST"
   | "SQL_FORBIDDEN"
@@ -52,13 +54,17 @@ export class ServiceError extends Error {
   readonly code: ErrorCode;
   readonly status: number;
   readonly retryAfterS: number | undefined;
+  /** Engine-neutral, sent as `error.kind` (error-kind.ts). */
+  readonly kind: ErrorKind;
 
-  constructor(code: ErrorCode, message: string) {
+  /** `sqliteCode`: SQLite's extended result code, when the executor had one. */
+  constructor(code: ErrorCode, message: string, sqliteCode?: number) {
     super(message);
     this.name = "ServiceError";
     this.code = code;
     this.status = STATUS[code];
     this.retryAfterS = RETRY_AFTER_S[code];
+    this.kind = errorKind(code, message, sqliteCode);
   }
 }
 
